@@ -3,6 +3,8 @@
 
 A revamped repo for Seidr - an instrument to perform photonic lantern fed kernel nulling at the VLTI.
 
+Original repository by Adam Taras can be found at ```bash https://github.com/ataras2/Seidr ```
+
 **very early developmental stage
 
 
@@ -20,8 +22,7 @@ pip install -e .
 
 ```
 seidr
-│   README.md
-│   requirements.txt    
+│   README.md   
 │
 └───src
 │   │
