@@ -6,8 +6,6 @@ A revamped repo for Seidr - an instrument to perform photonic lantern fed kernel
 **very early developmental stage
 
 
-### Installation
-
 ### Development installation
 
 Clone the repository and install in editable mode:
@@ -28,13 +26,10 @@ seidr
 └───src
 │   │
 │   └───seidr
-│   │   │   __init__.py
-│   │   │   lanternfiber.py
-│   │   │   SeidrSim.py
-│   │   │   star_planet.py
-│   │
-│   │
-│   └───seidr.egg-info
+│       │   __init__.py
+│       │   lanternfiber.py
+│       │   SeidrSim.py
+│       │   star_planet.py
 │
 │
 └───test
