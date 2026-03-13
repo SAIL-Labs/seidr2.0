@@ -3,6 +3,8 @@
 
 A revamped repo for Seidr - an instrument to perform photonic lantern fed kernel nulling at the VLTI.
 
+**very early developmental stage
+
 
 ### Installation
 
