@@ -13,7 +13,7 @@ Original repository by Adam Taras can be found at ```bash https://github.com/ata
 Clone the repository and install in editable mode:
 
 ```bash
-git clone https://github.com/nathanske42/seidr2.0.git
+git clone https://github.com/SAIL-Labs/seidr2.0.git
 cd seidr2.0
 pip install -e .
 ```
