@@ -9,7 +9,7 @@ from seidr.seidr_functions_misc import make_smoothrand_multi,\
 
 
 #%%###########################################################################
-def source2pl_temporal(
+def source2pl_zernike_temporal(
     n_sims=100,
     wavel=1.55,
     f_number=4.5,
@@ -24,8 +24,6 @@ def source2pl_temporal(
     max_rms_perterm=0.4,
     min_rms_perterm=0.05,
     smooth_amt=7,
-    return_wfs=True,
-    calc_pl_outputs=True,
     f_pl_path=None,
     f_pl_name=None,
     r_core=None,
@@ -45,7 +43,7 @@ def source2pl_temporal(
     ----------
     wf_npixels : int
         Pupil-plane array size passed to poppy's OpticalSystem (sets the
-        resolution of the pupil wavefront stored in results["pupil_wfs"]).
+        resolution of the pupil wavefront stored in results["pupil_wf"]).
 
     Returns
     -------
@@ -93,25 +91,29 @@ def source2pl_temporal(
     all_lp_powers = []
     all_lp_coeffs = []
     all_fields = []
-    all_pupil_wfs = [] if return_wfs else None
-    all_pl_outputs = [] if calc_pl_outputs else None
-    all_pl_powers = [] if calc_pl_outputs else None
+    all_pupil_wf = []
+    all_pl_outputs = []
+    all_pl_powers = []
 
     ## Generate Zernike coefficient wavefront error RMS values
     # using Gaussian kernel smoothing
-    rms_per_mode = zernike_rms_per_mode(max_rms_perterm, min_rms_perterm,
-                                         n_zernikes)
+
+    # check if tip/tilt only (modes 2 and 3), or if including higher-order modes
+    if n_zernikes == 3:
+        rms_per_mode = np.concatenate(([0], [max_rms_perterm, min_rms_perterm]))
+    else:
+        rms_per_mode = zernike_rms_per_mode(max_rms_perterm, min_rms_perterm,
+                                            n_zernikes)
 
     zernike_coef_array = make_smoothrand_multi(n_sims, n_zernikes,
                                                finalsds=rms_per_mode,
                                                smthamt=smooth_amt)
 
     ## Load LB transfer matrix for PL propagation
-    if calc_pl_outputs:
-        transfer_matrix = load_lb_transfer_matrix(f_pl_path, f_pl_name,
-                                                   wavel, r_core, ds,
-                                                   dz, rv, xywidth,
-                                                   z_len, tr)
+    transfer_matrix = load_lb_transfer_matrix(f_pl_path, f_pl_name,
+                                                wavel, r_core, ds,
+                                                dz, rv, xywidth,
+                                                z_len, tr)
 
     ##########################################################################
     ### Main simulation loop
@@ -133,8 +135,7 @@ def source2pl_temporal(
             field = field.reshape(psf_npixels, os, psf_npixels, os).mean(axis=(1, 3))
 
         ### Pupil wavefront phase
-        if return_wfs:
-            pupil_wf = zpsf.pupil_wf.phase
+        pupil_wf = zpsf.pupil_wf.phase
 
         ### Decompose focal-plane field into LP modes
         total_coupling, lp_powers, lp_coeffs = lf.calc_injection_multi(
@@ -146,9 +147,8 @@ def source2pl_temporal(
         )
 
         ## Calculate PL outputs if desired
-        if calc_pl_outputs:
-            pl_outputs = transfer_matrix.T @ lp_coeffs
-            pl_powers = np.abs(pl_outputs) ** 2
+        pl_outputs = transfer_matrix.T @ lp_coeffs
+        pl_powers = np.abs(pl_outputs) ** 2
 
         ## Store results
         all_zernikes.append(np.array(zernike_coef_array[i, :]))
@@ -156,13 +156,9 @@ def source2pl_temporal(
         all_lp_powers.append(np.array(lp_powers))
         all_lp_coeffs.append(np.array(lp_coeffs))
         all_fields.append(np.array(field))
-
-        if return_wfs:
-            all_pupil_wfs.append(np.array(pupil_wf))
-
-        if calc_pl_outputs:
-            all_pl_outputs.append(np.array(pl_outputs))
-            all_pl_powers.append(np.array(pl_powers))
+        all_pupil_wf.append(np.array(pupil_wf))
+        all_pl_outputs.append(np.array(pl_outputs))
+        all_pl_powers.append(np.array(pl_powers))
 
     ## Combine outputs
     results = {
@@ -174,14 +170,163 @@ def source2pl_temporal(
         "nmodes": lf.nmodes,
         "microns_per_pixel": lf.microns_per_pixel,
         "psf_fields": np.array(all_fields),
+        "pupil_wf": np.array(all_pupil_wf),
+        "pl_outputs": np.array(all_pl_outputs),
+        "pl_powers": np.array(all_pl_powers),
     }
 
-    if return_wfs:
-        results["pupil_wfs"] = np.array(all_pupil_wfs)
+    return lf, results
 
-    if calc_pl_outputs:
-        results["pl_outputs"] = np.array(all_pl_outputs)
-        results["pl_powers"] = np.array(all_pl_powers)
+
+
+
+#%%###########################################################################
+def source2pl_kolmogorov_temporal(
+    phase_screens,
+    wavel=1.55,
+    f_number=4.5,
+    pupil_diameter=1.8,
+    n_core=1.4440,
+    n_cladding=1.4400,
+    core_diameter=18.0,
+    max_r=3.0,
+    wf_npixels=None,
+    psf_npixels=256,
+    f_pl_path=None,
+    f_pl_name=None,
+    r_core=None,
+    ds=None,
+    dz=None,
+    rv=None,
+    xywidth=None,
+    z_len=None,
+    tr=None,
+):
+    """
+    Generate PSFs from preloaded Kolmogorov phase screens via Fraunhofer
+    propagation (poppy), then decompose the focal-plane field into LP modes
+    using lanternfiber.
+
+    Parameters
+    ----------
+    phase_screens : ndarray, shape (n_sims, N, N)
+        Preloaded Kolmogorov phase screens in radians. Each N x N screen is
+        assumed to span the full pupil aperture diameter across N pixels.
+    wf_npixels : int
+        Pupil-plane array size passed to poppy's OpticalSystem.
+
+    Returns
+    -------
+    lf : lanternfiber
+        Configured lanternfiber object with computed LP mode fields.
+    results : dict
+        Dataset containing PSF fields, pupil wavefronts, LP powers, LP complex
+        coefficients, and PL outputs.
+    """
+
+    n_sims = phase_screens.shape[0]
+
+    ##########################################################################
+    ### Build lanternfiber and zernikePSF objects
+
+    lf = lanternfiber.lanternfiber(
+        n_core=n_core,
+        n_cladding=n_cladding,
+        core_radius=core_diameter / 2,
+        wavelength=wavel,
+    )
+    lf.find_fiber_modes()
+    lf.make_fiber_modes(npix=psf_npixels // 2, show_plots=False, max_r=max_r)
+
+    # Physical pixel scale at focal plane [um/pix] must match lanternfiber mode
+    # fields: microns_per_pixel = max_r * core_diameter / psf_npixels.
+    # Convert to arcsec/pix for poppy: pixscale = (scale_um / f_um) * (648000/pi)
+    focal_length = f_number * pupil_diameter  # [um]
+    target_pixel_scale = max_r * core_diameter / psf_npixels  # [um/pix]
+    pixscale_arcsec = target_pixel_scale / focal_length * (648000 / np.pi)
+
+    zpsf = zernikePSF.zernikePSF(
+        radius=pupil_diameter / 2 * 1e-6,  # aperture radius [m]
+        wavelength=wavel * 1e-6,            # wavelength [m]
+        pixscale=pixscale_arcsec,
+        FOV_pixels=psf_npixels,
+        wf_pixels=wf_npixels,
+    )
+
+    ##########################################################################
+    ### Setup
+
+    mode_numbers = list(range(len(lf.allmodefields_rsoftorder)))
+
+    ## Initialize lists to store results
+    all_total_coupling = []
+    all_lp_powers = []
+    all_lp_coeffs = []
+    all_fields = []
+    all_pupil_wf = []
+    all_pl_outputs = []
+    all_pl_powers = []
+
+    ## Load LB transfer matrix for PL propagation
+    transfer_matrix = load_lb_transfer_matrix(f_pl_path, f_pl_name,
+                                              wavel, r_core, ds,
+                                              dz, rv, xywidth,
+                                              z_len, tr)
+
+    ##########################################################################
+    ### Main simulation loop
+    for i in range(n_sims):
+
+        ### Propagate point source through Kolmogorov phase screen aperture
+        zpsf.makePhaseScreenPSF(phase_screens[i])
+
+        ### Focal-plane complex field E(x,y) = A(x,y) exp(i phi(x,y))
+        field = zpsf.wf.amplitude * np.exp(1j * zpsf.wf.phase)
+
+        # Poppy uses internal oversampling; downsample to psf_npixels x psf_npixels
+        # so that the field pixel scale matches the lanternfiber mode fields.
+        if field.shape[0] != psf_npixels:
+            os = field.shape[0] // psf_npixels
+            field = field.reshape(psf_npixels, os, psf_npixels, os).mean(axis=(1, 3))
+
+        ### Pupil wavefront phase
+        pupil_wf = zpsf.pupil_wf.phase
+
+        ### Decompose focal-plane field into LP modes
+        total_coupling, lp_powers, lp_coeffs = lf.calc_injection_multi(
+            input_field=field,
+            mode_field_numbers=mode_numbers,
+            show_plots=False,
+            return_abspower=True,
+            complex=True,
+        )
+
+        ## Calculate PL outputs
+        pl_outputs = transfer_matrix.T @ lp_coeffs
+        pl_powers = np.abs(pl_outputs) ** 2
+
+        ## Store results
+        all_total_coupling.append(np.array(total_coupling))
+        all_lp_powers.append(np.array(lp_powers))
+        all_lp_coeffs.append(np.array(lp_coeffs))
+        all_fields.append(np.array(field))
+        all_pupil_wf.append(np.array(pupil_wf))
+        all_pl_outputs.append(np.array(pl_outputs))
+        all_pl_powers.append(np.array(pl_powers))
+
+    ## Combine outputs
+    results = {
+        "total_coupling": np.array(all_total_coupling),
+        "lp_powers": np.array(all_lp_powers),
+        "lp_coeffs": np.array(all_lp_coeffs),
+        "modelabels": np.array(lf.modelabels, dtype=object),
+        "nmodes": lf.nmodes,
+        "microns_per_pixel": lf.microns_per_pixel,
+        "psf_fields": np.array(all_fields),
+        "pupil_wf": np.array(all_pupil_wf),
+        "pl_outputs": np.array(all_pl_outputs),
+        "pl_powers": np.array(all_pl_powers),
+    }
 
     return lf, results
 
@@ -203,7 +348,7 @@ def source2pl_temporal(
 #     max_rms_perterm=0.4,
 #     min_rms_perterm=0.05,
 #     smooth_amt=7,
-#     return_wfs=True,
+#     return_wf=True,
 #     calc_pl_outputs=True,
 #     f_pl_path=None,
 #     f_pl_name=None,
@@ -257,7 +402,7 @@ def source2pl_temporal(
 #     all_lp_powers = []
 #     all_lp_coeffs = []
 #     all_fields = []
-#     all_pupil_wfs = [] if return_wfs else None
+#     all_pupil_wf = [] if return_wf else None
 #     all_pl_outputs = [] if calc_pl_outputs else None
 
 #     ## Generate Zernike coefficient wavefront error RMS values 
@@ -330,8 +475,8 @@ def source2pl_temporal(
 #         all_lp_coeffs.append(np.array(lp_coeffs))
 #         all_fields.append(np.array(field))
 
-#         if return_wfs:
-#             all_pupil_wfs.append(np.array(pupil_wf))
+#         if return_wf:
+#             all_pupil_wf.append(np.array(pupil_wf))
         
 #         if calc_pl_outputs:
 #             all_pl_outputs.append(np.array(pl_outputs))
@@ -351,8 +496,8 @@ def source2pl_temporal(
 #         "psf_fields": np.array(all_fields),
 #     }
     
-#     if return_wfs:
-#         results["pupil_wfs"] = np.array(all_pupil_wfs)
+#     if return_wf:
+#         results["pupil_wf"] = np.array(all_pupil_wf)
 
 #     if calc_pl_outputs:
 #         results["pl_outputs"] = np.array(all_pl_outputs)
