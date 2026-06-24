@@ -11,157 +11,761 @@ WF correction analysis: compare uncorrected (Kolmogorov) and corrected
 #     _ip.run_line_magic('autoreload', '2')
 
 import numpy as np
-from pathlib import Path
 import matplotlib.pyplot as plt
+import zernikePSF
 
-from seidr.seidr_functions_misc import plot_wf_psf_lp_pl, plot_histograms
+from seidr.seidr_functions_misc import plot_wf_psf_lp_pl, plot_histograms, \
+                                        load_dataset, make_pupil_mask, strehl_ratio
+
+#%%###########################################################################
+
+plt.style.use(['seaborn-v0_8-paper']) #-v0_8-paper
+
+plt.rcParams['axes.titlesize'] = 12
+plt.rcParams['axes.labelsize'] = 11
+plt.rcParams['xtick.labelsize'] = 10
+plt.rcParams['ytick.labelsize'] = 10
+plt.rcParams['lines.linewidth'] = 1.5
+plt.rcParams['lines.markersize'] = 5.5
+plt.rcParams["font.weight"] = "normal"
+plt.rcParams["axes.labelweight"] = "normal"
 
 #%%########################################################################
-### Filenames ###
+### Paths ###
 
 dir_data = "/import/roci1/nlon0790/Results/psf_prop/"
-dir_plot  = Path("/suphys/nlon0790/Documents/python_code/seidr2.0/figures/")
-
-## Uncorrected: Kolmogorov propagation dataset
-f_uncorr = dir_data + "hms-pl6c_wf_psf_lp_dataset_slmcube_202400708_seeing_0.4-10-scl1_contig_20260526-2331.npz"
-
-## Corrected: TNN residual propagation dataset
-f_corr   = dir_data + "hms-pl6c_preds_wf_psf_lp_dataset_slmcube_202400708_seeing_0.4-10-scl1_contig_20260603-1240.npz"
-
-## Corrected (reload): Kolmogorov + TNN residual re-propagation dataset
-f_uncorr_reload = dir_data + "hms-pl6c_kolpreds_wf_psf_lp_dataset_slmcube_202400708_seeing_0.4-10-scl1_contig_20260603-1318.npz"
+dir_plot = '/suphys/nlon0790/Documents/python_code/seidr2.0/figures/'
 
 #%%########################################################################
-### Split / Sequence Parameters (must match those used during TNN training) ###
+### Control ###
 
-val_split  = 0.15
-test_split = 0.15
-seq_length = 50   # TNN input sequence length; predictions align to test[seq_length:]
+wf_type = "kolmogorov"   # "kolmogorov" or "tiptilt" or "baldr"
+
+sequential_length = 50    # length of input sequences for sequential models
+val_split   = 0.15
+test_split  = 0.15
+
+#%%########################################################################
+### Dataset Registry ###
+# Each entry: (filepath, is_raw)
+#   is_raw=True  → uncorrected raw dataset; slice to test window [n_val : n_val+n_test]
+#   is_raw=False → nn prediction dataset (already the test set); load all
+
+_DATASETS_KOL = {
+    ## uncorrected (raw)
+    "kol_contig":     (dir_data + "hms-pl6c_kol_wf_psf_lp_dataset_slmcube_202400708_seeing_0.4-10-scl1_contig_20260526-2331.npz",
+                       True),
+    "kol_rand":       (dir_data + "hms-pl6c_kol_wf_psf_lp_dataset_slmcube_202400708_seeing_0.4-10-scl1_rand_20260610-0917.npz",
+                       True),
+    ## corrected (nn predictions re-propagated)
+    "tnn_kol_contig": (dir_data + "hms-pl6c_pred_tnn_kol_contig_wf_psf_lp_dataset_20260609-2055.npz",
+                       False),
+    "cnn_kol_contig": (dir_data + "hms-pl6c_pred_cnn_kol_contig_wf_psf_lp_dataset_20260609-2119.npz",
+                       False),
+    "tnn_kol_rand":   (dir_data + "hms-pl6c_pred_tnn_kol_rand_wf_psf_lp_dataset_20260610-1303.npz",
+                       False),
+    "cnn_kol_rand":   (dir_data + "hms-pl6c_pred_cnn_kol_rand_wf_psf_lp_dataset_20260610-1256.npz",
+                       False),
+}
+
+_DATASETS_BALDR = {
+    ## uncorrected (raw)
+    "baldr_contig":     (dir_data + "hms-pl6c_baldr_wf_psf_lp_dataset_20260615-1417.npz",
+                         True),
+    ## corrected (tnn predictions re-propagated); no CNN or rand variant yet
+    "tnn_baldr_contig": (dir_data + "hms-pl6c_pred_tnn_baldr_contig_wf_psf_lp_dataset_20260616-1327.npz",
+                         False),
+    "cnn_baldr_contig": (dir_data + "hms-pl6c_pred_cnn_baldr_contig_wf_psf_lp_dataset_20260616-1546.npz",
+                         False),
+}
+
+_DATASETS_TIPTILT = {
+    ## uncorrected (raw)
+    "tiptilt_contig": (dir_data + "hms-pl6c_tiptilt_wf_psf_lp_dataset_contig_20260608-1913.npz",
+                       True),
+    "tiptilt_rand":   (dir_data + "hms-pl6c_tiptilt_wf_psf_lp_dataset_rand_20260609-0903.npz",
+                       True),
+    
+    ## corrected (nn predictions re-propagated)
+    "tnn_tiptilt_contig": (dir_data + "hms-pl6c_pred_tnn_tiptilt_contig_wf_psf_lp_dataset_20260610-1249.npz",
+                           False),
+    "cnn_tiptilt_contig": (dir_data + "hms-pl6c_pred_cnn_tiptilt_contig_wf_psf_lp_dataset_20260610-0959.npz",
+                           False),
+    "tnn_tiptilt_rand":   (dir_data + "hms-pl6c_pred_tnn_tiptilt_rand_wf_psf_lp_dataset_20260609-2221.npz",
+                           False),
+    "cnn_tiptilt_rand":   (dir_data + "hms-pl6c_pred_cnn_tiptilt_rand_wf_psf_lp_dataset_20260609-2227.npz",
+                           False),
+}
+
+if wf_type == "kolmogorov":
+    _DATASETS    = _DATASETS_KOL
+    _k_contig    = 'kol_contig'
+    _k_rand      = 'kol_rand'
+    _k_tnn_contig = 'tnn_kol_contig'
+    _k_cnn_contig = 'cnn_kol_contig'
+    _k_tnn_rand  = 'tnn_kol_rand'
+    _k_cnn_rand  = 'cnn_kol_rand'
+    _wft          = 'Kol'
+
+elif wf_type == "tiptilt":
+    _DATASETS    = _DATASETS_TIPTILT
+    _k_contig    = 'tiptilt_contig'
+    _k_rand      = 'tiptilt_rand'
+    _k_tnn_contig = 'tnn_tiptilt_contig'
+    _k_cnn_contig = 'cnn_tiptilt_contig'
+    _k_tnn_rand  = 'tnn_tiptilt_rand'
+    _k_cnn_rand  = 'cnn_tiptilt_rand'
+    _wft          = 'TipTilt'
+    
+elif wf_type == "baldr":
+    _DATASETS     = _DATASETS_BALDR
+    _k_contig     = 'baldr_contig'
+    _k_rand       = 'baldr_contig'       # no rand variant
+    _k_tnn_contig = 'tnn_baldr_contig'
+    _k_cnn_contig = 'cnn_baldr_contig'
+    _k_tnn_rand   = 'tnn_baldr_contig'   # no rand variant
+    _k_cnn_rand   = 'cnn_baldr_contig'   # no rand variant
+    _wft          = 'Baldr'
 
 #%%########################################################################
 ### Load Datasets ###
 
-print("Loading uncorrected dataset (test split, seq-aligned)...")
-_uncorr_full = np.load(f_uncorr, allow_pickle=True)
-modelabels   = _uncorr_full['modelabels']
+_KEYS = ['pupil_wf', 'psf_fields', 'lp_powers', 'pl_powers', 'total_coupling']
 
-_N      = _uncorr_full['pupil_wf'].shape[0]
-_n_val  = int(_N * val_split)
-_n_test = int(_N * test_split)
-# test occupies [_i1 : _i2]; TNN predicts output[j] = test[j + seq_length],
-# so aligned uncorrected comparison starts at test[seq_length:]
-_i1, _i2 = _n_val + seq_length, _n_val + _n_test
-print(f"  Full dataset: {_N} samples  →  test slice [{_n_val}:{_n_val+_n_test}]"
-      f"  →  seq-aligned [{_i1}:{_i2}] ({_i2-_i1} samples)")
 
-uncorr = {
-    'pupil_wf':       _uncorr_full['pupil_wf'][_i1:_i2],
-    'psf_fields':     _uncorr_full['psf_fields'][_i1:_i2],
-    'lp_powers':      _uncorr_full['lp_powers'][_i1:_i2],
-    'pl_powers':      _uncorr_full['pl_powers'][_i1:_i2],
-    'total_coupling': _uncorr_full['total_coupling'][_i1:_i2],
-    'modelabels':     modelabels,
+datasets = {}
+for label, (fpath, is_raw) in _DATASETS.items():
+    print(f"Loading {label} ...")
+    datasets[label] = load_dataset(fpath, is_raw, 
+                                   val_split, test_split, _KEYS)
+    print(f"  pupil_wf: {datasets[label]['pupil_wf'].shape}")
+
+first_label = next(iter(datasets))
+modelabels = datasets[first_label]['modelabels']
+print(f"\nLoaded {len(datasets)} datasets: {list(datasets.keys())}")
+
+# Override pupil_wf for prediction datasets with the matching raw input wavefront so all
+# datasets carry the same original wavefront. residual_wf retains the NN residual.
+# TNN contig predictions are offset by seq_length (sliding window), so the raw slice
+# starts at offset to align physical frames.
+_raw_wf_lookup = {
+    'tnn_kol_contig':     ('kol_contig',     sequential_length),
+    'cnn_kol_contig':     ('kol_contig',     0),
+    'tnn_kol_rand':       ('kol_rand',       0),
+    'cnn_kol_rand':       ('kol_rand',       0),
+    'tnn_tiptilt_contig': ('tiptilt_contig', sequential_length),
+    'cnn_tiptilt_contig': ('tiptilt_contig', 0),
+    'tnn_tiptilt_rand':   ('tiptilt_rand',   0),
+    'cnn_tiptilt_rand':   ('tiptilt_rand',   0),
+    'tnn_baldr_contig':   ('baldr_contig',   sequential_length),
+    'cnn_baldr_contig':   ('baldr_contig',   0),
 }
-print(f"  pupil_wf:       {uncorr['pupil_wf'].shape}")
-print(f"  psf_fields:     {uncorr['psf_fields'].shape}")
-print(f"  lp_powers:      {uncorr['lp_powers'].shape}")
-print(f"  pl_powers:      {uncorr['pl_powers'].shape}")
-print(f"  total_coupling: {uncorr['total_coupling'].shape}")
 
-print("\nLoading corrected dataset...")
-_corr = np.load(f_corr, allow_pickle=True)
+for label, (raw_label, offset) in _raw_wf_lookup.items():
+    if label not in datasets or raw_label not in datasets:
+        continue
+    n_pred = datasets[label]['pupil_wf'].shape[0]
+    datasets[label]['pupil_wf'] = datasets[raw_label]['pupil_wf'][offset : offset + n_pred]
 
-corr = {
-    'pupil_wf':       _corr['pupil_wf'],
-    'psf_fields':     _corr['psf_fields'],
-    'lp_powers':      _corr['lp_powers'],
-    'pl_powers':      _corr['pl_powers'],
-    'total_coupling': _corr['total_coupling'],
-    'modelabels':     modelabels,
+#%%########################################################################
+### Core 0 power ratio for all datasets ###
+
+core0_ratios = {
+    label: ds['pl_powers'][:, 0] / ds['pl_powers'].sum(axis=1)
+    for label, ds in datasets.items()
 }
-print(f"  pupil_wf:       {corr['pupil_wf'].shape}")
-print(f"  psf_fields:     {corr['psf_fields'].shape}")
-print(f"  lp_powers:      {corr['lp_powers'].shape}")
-print(f"  pl_powers:      {corr['pl_powers'].shape}")
-print(f"  total_coupling: {corr['total_coupling'].shape}")
 
-print("\nLoading uncorr_reload dataset...")
-_reload = np.load(f_uncorr_reload, allow_pickle=True)
+print("\nCore 0 power ratio summary:")
+for label, ratio in core0_ratios.items():
+    print(f"  {label:20s}  mean={ratio.mean():.4f}  std={ratio.std():.4f}")
 
-uncorr_reload = {
-    'pupil_wf':       _reload['pupil_wf'],
-    'psf_fields':     _reload['psf_fields'],
-    'lp_powers':      _reload['lp_powers'],
-    'pl_powers':      _reload['pl_powers'],
-    'total_coupling': _reload['total_coupling'],
-    'modelabels':     modelabels,
+
+#%%#########################################################################
+### % improvement in mode-selective core power ratio ###
+
+_comparisons = [
+    (_k_contig, _k_cnn_contig, 'CNN (contig)'),
+    (_k_contig, _k_tnn_contig, 'TNN (contig)'),
+    (_k_rand,   _k_cnn_rand,   'CNN (rand)'),
+    (_k_rand,   _k_tnn_rand,   'TNN (rand)'),
+]
+
+print("\nMode-selective core power ratio improvement:")
+print(f"  {'Model':<20s}  {'Raw mean':>10s}  {'Corr mean':>10s}  {'% increase':>10s}")
+for raw_key, corr_key, name in _comparisons:
+    mu_raw  = core0_ratios[raw_key].mean()
+    mu_corr = core0_ratios[corr_key].mean()
+    pct = 100 * (mu_corr - mu_raw) / mu_raw
+    print(f"  {name:<20s}  {mu_raw:>10.4f}  {mu_corr:>10.4f}  {pct:>+10.2f}%")
+
+
+#%%#########################################################################
+### Strehl ratio (Marechal approximation) for all datasets ###
+
+_pupil_mask = make_pupil_mask(datasets[first_label]['pupil_wf'].shape[-2:])
+
+def strehl_marechal(wf, mask):
+    """Strehl ratio via the Marechal approximation: S = exp(-sigma^2),
+    where sigma^2 is the piston-removed phase variance over the pupil [rad^2]."""
+    wf_px = wf[:, mask]                                   # (N, n_px)
+    wf_px = wf_px - wf_px.mean(axis=-1, keepdims=True)    # remove piston
+    sigma2 = wf_px.var(axis=-1)
+    return np.exp(-sigma2)
+
+strehl_ratios = {
+    # corrected datasets carry the post-correction residual in 'residual_wf';
+    # their 'pupil_wf' was overwritten above with the raw input wavefront for
+    # side-by-side plotting, so it must NOT be used here.
+    label: strehl_marechal(ds.get('residual_wf', ds['pupil_wf']), _pupil_mask)
+    for label, ds in datasets.items()
 }
-print(f"  pupil_wf:       {uncorr_reload['pupil_wf'].shape}")
-print(f"  psf_fields:     {uncorr_reload['psf_fields'].shape}")
-print(f"  lp_powers:      {uncorr_reload['lp_powers'].shape}")
-print(f"  pl_powers:      {uncorr_reload['pl_powers'].shape}")
-print(f"  total_coupling: {uncorr_reload['total_coupling'].shape}")
 
-n_samples = uncorr['pupil_wf'].shape[0]
-assert corr['pupil_wf'].shape[0] == n_samples, \
-    f"Dataset sizes do not match: uncorr {n_samples} vs corr {corr['pupil_wf'].shape[0]}"
-assert uncorr_reload['pupil_wf'].shape[0] == n_samples, \
-    f"Dataset sizes do not match: uncorr {n_samples} vs uncorr_reload {uncorr_reload['pupil_wf'].shape[0]}"
-print(f"\n{n_samples} matched samples loaded (test[{seq_length}:]).")
+#%%#############################################################################
+print("\nStrehl ratio (Marechal approximation) summary:")
+for label, s in strehl_ratios.items():
+    print(f"  {label:20s}  mean={s.mean():.4f}  std={s.std():.4f}")
+
+print("\nStrehl ratio improvement:")
+print(f"  {'Model':<20s}  {'Raw mean':>10s}  {'Corr mean':>10s}  {'% increase':>10s}")
+for raw_key, corr_key, name in _comparisons:
+    mu_raw  = strehl_ratios[raw_key].mean()
+    mu_corr = strehl_ratios[corr_key].mean()
+    pct = 100 * (mu_corr - mu_raw) / mu_raw
+    print(f"  {name:<20s}  {mu_raw:>10.4f}  {mu_corr:>10.4f}  {pct:>+10.2f}%")
+
+
+#%%#########################################################################
+### RMS Values Post-Wavefront Correction ###
+
+def wf_rms(wf, mask):
+    """Residual wavefront RMS [rad]: sqrt of the piston-removed phase
+    variance over the pupil."""
+    wf_px = wf[:, mask]                                   # (N, n_px)
+    wf_px = wf_px - wf_px.mean(axis=-1, keepdims=True)    # remove piston
+    return np.sqrt(wf_px.var(axis=-1))
+
+wf_rms_residuals = {
+    # same residual_wf vs pupil_wf caveat as the Strehl calculation above
+    label: wf_rms(ds.get('residual_wf', ds['pupil_wf']), _pupil_mask)
+    for label, ds in datasets.items()
+}
+
+#%%
+print("\nResidual wavefront RMS [rad] summary:")
+for label, r in wf_rms_residuals.items():
+    print(f"  {label:20s}  mean={r.mean():.4f}  std={r.std():.4f}")
+
+print("\nResidual wavefront RMS reduction:")
+print(f"  {'Model':<20s}  {'Raw mean':>10s}  {'Corr mean':>10s}  {'% decrease':>10s}")
+for raw_key, corr_key, name in _comparisons:
+    mu_raw  = wf_rms_residuals[raw_key].mean()
+    mu_corr = wf_rms_residuals[corr_key].mean()
+    pct = 100 * (mu_raw - mu_corr) / mu_raw
+    print(f"  {name:<20s}  {mu_raw:>10.4f}  {mu_corr:>10.4f}  {pct:>+10.2f}%")
+
 
 #%%########################################################################
 ### Plot Example Row ###
 
-idx = np.random.randint(0, n_samples)
+idx = 500 if wf_type == "baldr" else 12781
 print(f"Example index: {idx}")
 
-plot_wf_psf_lp_pl(uncorr, idx=idx)
+# TNN contig predictions are indexed from the sliding window: tnn_contig[i] covers
+# test frame i+seq_length. Subtract seq_length so all datasets plot the same physical frame.
+_seq_offset = {
+    'tnn_kol_contig':     -sequential_length,
+    'tnn_tiptilt_contig': -sequential_length,
+    'tnn_baldr_contig':   -sequential_length,
+}
 
-#%%########################################################################
+for label, ds in datasets.items():
+    effective_idx = idx + _seq_offset.get(label, 0)
+    n = ds['pupil_wf'].shape[0]
+    if effective_idx < 0 or effective_idx >= n:
+        continue
+    print(f"\nPlotting example {idx} from dataset '{label}' (N={n}, access_idx={effective_idx}) ...")
+    plot_wf_psf_lp_pl(ds, idx=effective_idx, save_plot=False,
+                      fname_plot=dir_plot + f"seidr_wf_psf_lp_pl_{label}_example_{idx}.pdf")
 
-plot_wf_psf_lp_pl(corr, idx=idx)
-
-#%%########################################################################
-
-plot_wf_psf_lp_pl(uncorr_reload, idx=idx)
-
-#%%########################################################################
-### Calculate the ratio of power in core 0
-
-core0_ratio_uncorr        = uncorr['pl_powers'][:, 0]        / uncorr['pl_powers'].sum(axis=1)
-core0_ratio_corr          = corr['pl_powers'][:, 0]          / corr['pl_powers'].sum(axis=1)
-core0_ratio_uncorr_reload = uncorr_reload['pl_powers'][:, 0] / uncorr_reload['pl_powers'].sum(axis=1)
-
-## Calculate mean and std of the core 0 ratio
-mean_uncorr        = core0_ratio_uncorr.mean()
-std_uncorr         = core0_ratio_uncorr.std()
-mean_corr          = core0_ratio_corr.mean()
-std_corr           = core0_ratio_corr.std()
-mean_uncorr_reload = core0_ratio_uncorr_reload.mean()
-std_uncorr_reload  = core0_ratio_uncorr_reload.std()
-
-print(f"Core 0 ratio (uncorrected):    mean={mean_uncorr:.4f}, std={std_uncorr:.4f}")
-print(f"Core 0 ratio (corrected):      mean={mean_corr:.4f}, std={std_corr:.4f}")
-print(f"Core 0 ratio (uncorr_reload):  mean={mean_uncorr_reload:.4f}, std={std_uncorr_reload:.4f}")
 
 
 #%%#########################################################################
-### Histograms ###
+### Histograms: NN Kol Contig vs Raw Kol Contig ###
 
+_contig_keys   = [_k_contig, _k_tnn_contig, _k_cnn_contig]
+_contig_labels = [f'Raw {_wft} (contig)', f'TNN {_wft} (contig)', f'CNN {_wft} (contig)']
+
+_rand_keys   = [_k_rand, _k_tnn_rand, _k_cnn_rand]
+_rand_labels = [f'Raw {_wft} (rand)', f'TNN {_wft} (rand)', f'CNN {_wft} (rand)']
+
+#%%#########################################################################
+### Histograms: NN Kol Contig vs Raw Kol Contig ###
 
 plot_histograms(
-    [core0_ratio_uncorr, core0_ratio_corr],
-    labels=['Uncorrected', 'Corrected'],
-    colors=["#D55E00", "#0072B2"],  # dark teal / coral
+    [core0_ratios[k] for k in _contig_keys],
+    labels=_contig_labels,
     bins=100,
     figsize=(8, 4),
     xlim=None,
-    xlabel='Mode Selective Core Power Ratio ($P_{ms} / P_{all}$)',
-    ylabel='Count',
-    title=None,
-    show_mean=False,
-    save_path=None,
+    xlabel='Mode-Selective Core Power Ratio ($P_{ms} / P_{all}$)',
+    ylabel='PDF',
+    title=f'{_wft} Contig: Uncorrected vs NN Corrected',
+    show_mean=True,
+    save_path=dir_plot + f'seidr_ms_core_ratio_{wf_type}_contig_nn_vs_raw.pdf',
     dpi=150,
 )
 
+#%%#########################################################################
+### Histograms: Strehl Ratio, NN Contig vs Raw Contig ###
+
+plot_histograms(
+    [strehl_ratios[k] for k in _contig_keys],
+    labels=_contig_labels,
+    bins=100,
+    figsize=(8, 4),
+    xlim=None,
+    xlabel='Strehl Ratio (Marechal approximation)',
+    ylabel='PDF',
+    title=f'{_wft} Contig: Uncorrected vs NN Corrected',
+    show_mean=True,
+    save_path=dir_plot + f'seidr_strehl_ratio_{wf_type}_contig_nn_vs_raw.pdf',
+    dpi=150,
+)
+
+#%%#########################################################################
+### Histograms: NN Kol Rand vs Raw Kol Rand ###
+
+plot_histograms(
+    [core0_ratios[k] for k in _rand_keys],
+    labels=_rand_labels,
+    bins=100,
+    figsize=(8, 4),
+    xlim=None,
+    xlabel='Mode-Selective Core Power Ratio ($P_{ms} / P_{all}$)',
+    ylabel='PDF',
+    title=f'{_wft} Rand: Uncorrected vs NN Corrected',
+    show_mean=True,
+    save_path=dir_plot + f'seidr_ms_core_ratio_{wf_type}_rand_nn_vs_raw.pdf',
+    dpi=150,
+)
+
+#%%#########################################################################
+### Histograms: Strehl Ratio, NN Rand vs Raw Rand ###
+
+plot_histograms(
+    [strehl_ratios[k] for k in _rand_keys],
+    labels=_rand_labels,
+    bins=100,
+    figsize=(8, 4),
+    xlim=None,
+    xlabel='Strehl Ratio (Marechal approximation)',
+    ylabel='PDF',
+    title=f'{_wft} Rand: Uncorrected vs NN Corrected',
+    show_mean=True,
+    save_path=dir_plot + f'seidr_strehl_ratio_{wf_type}_rand_nn_vs_raw.pdf',
+    dpi=150,
+)
+
+#%%#########################################################################
+### Histograms: Contig + Rand Combined ###
+
+# Random first, Temporal second; plotting order Raw → CNN → TNN
+_groups = {
+    'Random':   ([_k_rand,  _k_tnn_rand, _k_cnn_rand],
+                 ['Uncorrected', 'TNN', 'CNN']),
+    'Temporal': ([_k_contig, _k_tnn_contig, _k_cnn_contig],
+                 ['Uncorrected', 'TNN', 'CNN']),
+}
+
+# gray (uncorrected reference) + blue (CNN) + deep orange (TNN)
+# gray reads as a neutral baseline; blue/orange are complementary and don't mix to mud
+_colors = ['#969696', '#4393C3', '#D6604D']
+
+fig, axes = plt.subplots(1, 2,
+                         figsize=(10.5, 5.5),
+                         sharey=True,
+                         tight_layout=True)
+
+for ax, (title, (keys, labels)) in zip(axes, _groups.items()):
+    for key, label, color in zip(keys, labels, _colors):
+        data = core0_ratios[key]
+        weights = np.ones_like(data) / len(data)
+        ax.hist(data, bins=100, histtype='stepfilled', alpha=0.4,
+                color=color, label=label, weights=weights)
+        ax.hist(data, bins=100, histtype='step', linewidth=1.8,
+                color=color, weights=weights)
+        ax.axvline(data.mean(), color=color, linestyle='--', linewidth=2, alpha=0.8)
+
+    ax.plot([], [], color='k', linestyle='--', linewidth=2, alpha=0.8, label='Mean')
+    ax.set_title('')
+    ax.set_xlabel('')
+    ax.legend(prop={'size': 17})
+    ax.grid(which='both', linestyle=':', linewidth=0.5, alpha=0.7)
+    ax.tick_params(axis='both', labelsize=14)
+    # ax.set_title(title, fontsize=15, weight='semibold')
+    # ax.set_xlabel('Mode-Selective Core Power Ratio', fontsize=15, weight='semibold')
+    # ax.legend(prop={'size': 15, 'weight': 'semibold'})
+    # ax.grid(which='both', linestyle=':', linewidth=0.5, alpha=0.7)
+
+axes[0].set_ylabel('')
+# axes[0].set_ylabel('PDF', fontsize=15, weight='semibold')
+fig.savefig(dir_plot + f'seidr_ms_core_ratio_{wf_type}_contig_rand_combined.svg', dpi=150)
+plt.show()
+
+#%%#########################################################################
+### Histograms: Strehl Ratio, Contig + Rand Combined ###
+
+fig, axes = plt.subplots(1, 2,
+                         figsize=(12, 5.5),
+                         sharey=True,
+                         tight_layout=True)
+
+for ax, (title, (keys, labels)) in zip(axes, _groups.items()):
+    for key, label, color in zip(keys, labels, _colors):
+        data = strehl_ratios[key]
+        weights = np.ones_like(data) / len(data)
+        ax.hist(data, bins=100, histtype='stepfilled', alpha=0.4,
+                color=color, label=label, weights=weights)
+        ax.hist(data, bins=100, histtype='step', linewidth=1.8,
+                color=color, weights=weights)
+        ax.axvline(data.mean(), color=color, linestyle='--', linewidth=2, alpha=0.8)
+
+    ax.plot([], [], color='k', linestyle='--', linewidth=2, alpha=0.8, label='Mean')
+    ax.set_title('')
+    ax.set_xlabel('')
+    ax.grid(which='both', linestyle=':', linewidth=0.5, alpha=0.7)
+    ax.tick_params(axis='both', labelsize=14)
+
+axes[0].set_xlim([-0.01, 1.01])
+axes[1].set_xlim([-0.01, 1.01])
+axes[0].legend(prop={'size': 17})
+axes[0].set_ylabel('')
+fig.savefig(dir_plot + f'seidr_strehl_ratio_{wf_type}_contig_rand_combined.svg', dpi=150)
+plt.show()
+
+#%%#########################################################################
+### Histogram: TNN Kol Contig vs Raw Kol Contig ###
+
+_pairs = [(_k_contig, 'Uncorrected'), (_k_tnn_contig, 'Corrected')]
+_pair_colors = ['#969696', '#D6604D']
+
+fig, ax = plt.subplots(figsize=(9, 5), tight_layout=True)
+for (key, label), color in zip(_pairs, _pair_colors):
+    data = core0_ratios[key]
+    weights = np.ones_like(data) / len(data)
+    ax.hist(data, bins=100, histtype='stepfilled', alpha=0.4,
+            color=color, label=label, weights=weights)
+    ax.hist(data, bins=100, histtype='step', linewidth=1.8,
+            color=color, weights=weights)
+    ax.axvline(data.mean(), color=color, linestyle='--', linewidth=2, alpha=0.8)
+
+ax.plot([], [], color='k', linestyle='--', linewidth=2, alpha=0.8, label='Mean')
+ax.set_title('')
+ax.set_xlabel('Ratio of power in mode-selective core', # ($P_{ms} / P_{all}$)',
+              fontsize=17)
+ax.set_ylabel('PDF', fontsize=17)
+ax.legend(prop={'size': 15})
+ax.grid(which='both', linestyle=':', linewidth=0.5, alpha=0.7)
+ax.tick_params(axis='both', labelsize=14)
+fig.savefig(dir_plot + f'seidr_ms_core_ratio_{wf_type}_contig_tnn_vs_raw.pdf', dpi=150)
+plt.show()
+
+#%%#########################################################################
+### Histogram: Strehl Ratio, TNN Kol Contig vs Raw Kol Contig ###
+
+fig, ax = plt.subplots(figsize=(9, 5), tight_layout=True)
+for (key, label), color in zip(_pairs, _pair_colors):
+    data = strehl_ratios[key]
+    weights = np.ones_like(data) / len(data)
+    ax.hist(data, bins=100, histtype='stepfilled', alpha=0.4,
+            color=color, label=label, weights=weights)
+    ax.hist(data, bins=100, histtype='step', linewidth=1.8,
+            color=color, weights=weights)
+    ax.axvline(data.mean(), color=color, linestyle='--', linewidth=2, alpha=0.8)
+
+ax.plot([], [], color='k', linestyle='--', linewidth=2, alpha=0.8, label='Mean')
+ax.set_title('')
+ax.set_xlabel('Strehl Ratio (Marechal approximation)', fontsize=17)
+ax.set_ylabel('PDF', fontsize=17)
+ax.legend(prop={'size': 15})
+ax.grid(which='both', linestyle=':', linewidth=0.5, alpha=0.7)
+ax.tick_params(axis='both', labelsize=14)
+fig.savefig(dir_plot + f'seidr_strehl_ratio_{wf_type}_contig_tnn_vs_raw.pdf', dpi=150)
+plt.show()
+
+#%%#########################################################################
+### Histogram: Strehl Ratio + Power Ratio side by side, TNN vs Raw Contig ###
+
+fig, axes = plt.subplots(1, 2, 
+                         figsize=(10, 5), 
+                         sharey=True, 
+                         tight_layout=True)
+
+_subplot_data = [
+    (axes[0], strehl_ratios, 'Strehl Ratio'),
+    (axes[1], core0_ratios,  'Ratio of power in mode-selective core'),
+]
+
+for ax, ratios, xlabel in _subplot_data:
+    for (key, label), color in zip(_pairs, _pair_colors):
+        data = ratios[key]
+        weights = np.ones_like(data) / len(data)
+        ax.hist(data, bins=100, histtype='stepfilled', alpha=0.4,
+                color=color, label=label, weights=weights)
+        ax.hist(data, bins=100, histtype='step', linewidth=1.8,
+                color=color, weights=weights)
+        ax.axvline(data.mean(), color=color, linestyle='--', 
+                   linewidth=2, alpha=0.8)
+    ax.plot([], [], color='k', linestyle='--', 
+            linewidth=2, alpha=0.8, label='Mean')
+    ax.set_xlabel(xlabel, fontsize=15)
+    ax.grid(which='both', linestyle=':', linewidth=0.5, alpha=0.7)
+    ax.tick_params(axis='both', labelsize=12)
+
+axes[1].legend(prop={'size': 13})
+axes[0].set_ylabel('PDF', fontsize=15)
+axes[0].set_xlim([-0.01, 1.01])
+axes[1].set_xlim([-0.01, 1.01])
+fig.savefig(dir_plot + f'seidr_strehl_power_ratio_{wf_type}_contig_tnn_vs_raw.svg', dpi=150)
+plt.show()
+
+
+#%%#########################################################################
+### Grouped bar chart: mean ± 1σ core-0 ratio by dataset ###
+
+_bar_groups = {
+    'Random': [_k_rand,    _k_cnn_rand,    _k_tnn_rand],
+    'Contig': [_k_contig,  _k_cnn_contig,  _k_tnn_contig],
+}
+_bar_labels = ['Uncorrected', 'CNN', 'TNN']
+_bar_colors = ['#969696', '#4393C3', '#D6604D']
+
+n_models  = len(_bar_labels)
+n_groups  = len(_bar_groups)
+_bar_x    = np.arange(n_groups)
+width     = 0.18   # bar width
+spacing   = 0.24   # centre-to-centre distance (> width → gap between bars)
+offsets   = np.linspace(-(n_models - 1) / 2, (n_models - 1) / 2, n_models) * spacing
+
+fig, ax = plt.subplots(figsize=(9, 5), tight_layout=True)
+
+for i, (label, color) in enumerate(zip(_bar_labels, _bar_colors)):
+    means = [core0_ratios[keys[i]].mean() for keys in _bar_groups.values()]
+    stds  = [core0_ratios[keys[i]].std()  for keys in _bar_groups.values()]
+    ax.bar(_bar_x + offsets[i], means, width,
+           yerr=stds, capsize=5,
+           color=color, alpha=0.85, label=label,
+           error_kw={'linewidth': 3, 'ecolor': 'k', 'alpha': 0.6})
+
+ax.plot([], [], color='k', linestyle='-', linewidth=2, label=r'$\pm 1\sigma$')
+
+# individual bar labels: True / CNN / TNN repeated per group
+_tick_pos    = [_bar_x[g] + offsets[i]
+                for g in range(n_groups) for i in range(n_models)]
+_tick_labels = ['Uncorrected', 'CNN', 'TNN'] * n_groups
+ax.set_xticks(_tick_pos)
+ax.set_xticklabels(_tick_labels, fontsize=13)
+
+
+ax.set_ylim([0, 1])
+ax.tick_params(axis='y', labelsize=14)
+ax.tick_params(axis='x', length=0)
+ax.set_ylabel('', fontsize=13)
+_h, _l = ax.get_legend_handles_labels()
+_sigma_i = _l.index(r'$\pm 1\sigma$')
+ax.legend([_h[_sigma_i]], [_l[_sigma_i]],
+          prop={'size': 17}, loc='lower center')
+ax.grid(axis='y', linestyle=':', linewidth=0.6, alpha=0.7)
+ax.set_axisbelow(True)
+
+fig.savefig(dir_plot + f'seidr_ms_core_ratio_{wf_type}_bar.svg', dpi=150,
+            bbox_inches='tight')
+plt.show()
+
+
+#%%#########################################################################
+### Grouped bar chart: mean ± 1σ Strehl ratio by dataset ###
+
+_bar_groups = {
+    'Random': [_k_rand,    _k_cnn_rand,    _k_tnn_rand],
+    'Contig': [_k_contig,  _k_cnn_contig,  _k_tnn_contig],
+}
+_bar_labels = ['Uncorrected', 'CNN', 'TNN']
+_bar_colors = ['#969696', '#4393C3', '#D6604D']
+
+n_models  = len(_bar_labels)
+n_groups  = len(_bar_groups)
+_bar_x    = np.arange(n_groups)
+width     = 0.18   # bar width
+spacing   = 0.24   # centre-to-centre distance (> width → gap between bars)
+offsets   = np.linspace(-(n_models - 1) / 2, (n_models - 1) / 2, n_models) * spacing
+
+
+fig, ax = plt.subplots(figsize=(9, 5), tight_layout=True)
+
+for i, (label, color) in enumerate(zip(_bar_labels, _bar_colors)):
+    means = [strehl_ratios[keys[i]].mean() for keys in _bar_groups.values()]
+    stds  = [strehl_ratios[keys[i]].std()  for keys in _bar_groups.values()]
+    ax.bar(_bar_x + offsets[i], means, width,
+           yerr=stds, capsize=5,
+           color=color, alpha=0.85, label=label,
+           error_kw={'linewidth': 3, 'ecolor': 'k', 'alpha': 0.6})
+
+ax.plot([], [], color='k', linestyle='-', linewidth=2, label=r'$\pm 1\sigma$')
+
+# individual bar labels: True / CNN / TNN repeated per group
+_tick_pos    = [_bar_x[g] + offsets[i]
+                for g in range(n_groups) for i in range(n_models)]
+_tick_labels = ['Uncorrected', 'CNN', 'TNN'] * n_groups
+ax.set_xticks(_tick_pos)
+ax.set_xticklabels(_tick_labels, fontsize=13)
+
+ax.set_ylim([0, 1.05])
+ax.tick_params(axis='y', labelsize=14)
+ax.tick_params(axis='x', length=0)
+ax.set_ylabel('', fontsize=13)
+_h, _l = ax.get_legend_handles_labels()
+_sigma_i = _l.index(r'$\pm 1\sigma$')
+ax.legend([_h[_sigma_i]], [_l[_sigma_i]],
+          prop={'size': 17}, loc='lower center')
+ax.grid(axis='y', linestyle=':', linewidth=0.6, alpha=0.7)
+ax.set_axisbelow(True)
+
+fig.savefig(dir_plot + f'seidr_strehl_ratio_{wf_type}_bar.svg', dpi=150,
+            bbox_inches='tight')
+plt.show()
+
+
+#%%#########################################################################
+### Grouped bar chart: mean ± 1σ residual wavefront RMS by dataset ###
+
+_bar_groups = {
+    'Random': [_k_rand,    _k_cnn_rand,    _k_tnn_rand],
+    'Contig': [_k_contig,  _k_cnn_contig,  _k_tnn_contig],
+}
+_bar_labels = ['Uncorrected', 'CNN', 'TNN']
+_bar_colors = ['#969696', '#4393C3', '#D6604D']
+
+n_models  = len(_bar_labels)
+n_groups  = len(_bar_groups)
+_bar_x    = np.arange(n_groups)
+width     = 0.18   # bar width
+spacing   = 0.24   # centre-to-centre distance (> width → gap between bars)
+offsets   = np.linspace(-(n_models - 1) / 2, (n_models - 1) / 2, n_models) * spacing
+
+
+fig, ax = plt.subplots(figsize=(9, 5), tight_layout=True)
+
+for i, (label, color) in enumerate(zip(_bar_labels, _bar_colors)):
+    means = [wf_rms_residuals[keys[i]].mean() for keys in _bar_groups.values()]
+    stds  = [wf_rms_residuals[keys[i]].std()  for keys in _bar_groups.values()]
+    ax.bar(_bar_x + offsets[i], means, width,
+           yerr=stds, capsize=5,
+           color=color, alpha=0.85, label=label,
+           error_kw={'linewidth': 3, 'ecolor': 'k', 'alpha': 0.6})
+
+ax.plot([], [], color='k', linestyle='-', linewidth=2, label=r'$\pm 1\sigma$')
+
+# individual bar labels: True / CNN / TNN repeated per group
+_tick_pos    = [_bar_x[g] + offsets[i]
+                for g in range(n_groups) for i in range(n_models)]
+_tick_labels = ['Uncorrected', 'CNN', 'TNN'] * n_groups
+ax.set_xticks(_tick_pos)
+ax.set_xticklabels(_tick_labels, fontsize=13)
+# ax.set_yscale('log')
+# ax.set_ylabel('Residual Wavefront RMS [rad]', fontsize=13)
+ax.tick_params(axis='y', labelsize=14)
+ax.tick_params(axis='x', length=0)
+_h, _l = ax.get_legend_handles_labels()
+_sigma_i = _l.index(r'$\pm 1\sigma$')
+ax.legend([_h[_sigma_i]], [_l[_sigma_i]],
+          prop={'size': 17}, loc='upper center')
+ax.grid(axis='y', linestyle=':', linewidth=0.6, alpha=0.7)
+ax.set_axisbelow(True)
+
+fig.savefig(dir_plot + f'seidr_wf_rms_{wf_type}_bar.svg', dpi=150,
+            bbox_inches='tight')
+plt.show()
+
+
+#%%###########################################################################
+### Load True Preds ###
+
+_dir_preds = '/import/roci1/nlon0790/Results/proteus/outputs/'
+
+_preds_files = {
+    'tnn_kol_contig':     _dir_preds + 'seidr_tnn_seq_plcin_wfout_kol_contig_npl6_20260609-1555_preds.npz',
+    'cnn_kol_contig':     _dir_preds + 'seidr_cnn_plcin_wfout_kol_contig_npl6_20260609-1826_preds.npz',
+    'tnn_baldr_contig':   _dir_preds + 'seidr_tnn_seq_plcin_wfout_baldr_contig_npl6_20260615-1640_preds.npz',
+}
+
+# Keys available: pred_wf_array, true_wf_array, residual_wf_array (all shape (N,64,64))
+#                 X_test, predictions_wf, y_test_wf, pupil_mask, normfacts_PL/WF, history_loss
+_preds_keys = ['pred_wf_array', 'true_wf_array', 'residual_wf_array', 'pupil_mask']
+
+preds = {}
+for label, fpath in _preds_files.items():
+    print(f"Loading preds: {label} ...")
+    d = np.load(fpath, allow_pickle=True)
+    preds[label] = {k: d[k] for k in _preds_keys}
+    print(f"  pred_wf_array:     {preds[label]['pred_wf_array'].shape}")
+    print(f"  true_wf_array:     {preds[label]['true_wf_array'].shape}")
+    print(f"  residual_wf_array: {preds[label]['residual_wf_array'].shape}")
+
+#%%#########################################################################
+### Wavefront grid: True / TNN pred / CNN pred (from preds, 4 random frames) ###
+
+rng    = np.random.default_rng()
+n_cols = 4
+# TNN[i] == CNN[i + sequential_length]: pick from TNN range, offset CNN indices
+n_tnn    = preds[_k_tnn_contig]['pred_wf_array'].shape[0]
+
+# tnn_idxs = rng.integers(0, n_tnn, size=n_cols)
+# cnn_idxs = tnn_idxs + sequential_length
+
+tnn_idxs = [13012, 4586, 13466, 14348]
+cnn_idxs = [13062, 4636, 13516, 14398]
+
+print(f"Selected TNN indices: {tnn_idxs}")
+print(f"Corresponding CNN indices: {cnn_idxs}")
+
+true_wfs = preds[_k_tnn_contig]['true_wf_array'][tnn_idxs]
+tnn_pred = preds[_k_tnn_contig]['pred_wf_array'][tnn_idxs]
+cnn_pred = preds[_k_cnn_contig]['pred_wf_array'][cnn_idxs]
+
+# Selected TNN indices: [13012 337 8474 4586 13466 6454
+# Corresponding CNN indices: [13062 387 8524 4636 13516 6504
+
+rows       = [true_wfs, tnn_pred, cnn_pred]
+row_labels = ['True', 'TNN Pred.', 'CNN Pred.']
+cmap = 'twilight'
+vmin, vmax = -np.pi, np.pi
+cbar_ticks      = [-np.pi, -np.pi/2, 0, np.pi/2, np.pi]
+cbar_ticklabels = [r'$-\pi$', r'$-\pi/2$', r'$0$', r'$\pi/2$', r'$\pi$']
+
+fig, axes = plt.subplots(
+    3, n_cols + 1,
+    figsize=(12, 7),
+    gridspec_kw={'width_ratios': [1]*n_cols + [0.06],
+                 'hspace': 0.04, 'wspace': 0.04},
+)
+
+for row_idx, (wfs, rlabel) in enumerate(zip(rows, row_labels)):
+    for col_idx in range(n_cols):
+        ax = axes[row_idx, col_idx]
+        im = ax.imshow(wfs[col_idx], cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        if col_idx == 0:
+            ax.set_ylabel(rlabel, fontsize=14)
+        if row_idx == 0:
+            ax.set_title(f'Frame {tnn_idxs[col_idx]}', fontsize=11)
+    cbar_ax = axes[row_idx, n_cols]
+    cb = fig.colorbar(im, cax=cbar_ax)
+    cb.set_ticks(cbar_ticks)
+    cb.set_ticklabels(cbar_ticklabels, fontsize=10)
+
+fig.savefig(dir_plot + f'seidr_wf_grid_true_tnn_cnn_{wf_type}_contig_preds.svg', dpi=150,
+            bbox_inches='tight')
+plt.show()
 # %%

@@ -11,11 +11,30 @@ import jax.random as jr
 import matplotlib.pyplot as plt
 import datetime
 
-from seidr.source2pl import source2pl_zernike_temporal, \
-    source2pl_kolmogorov_temporal
+from seidr.source2pl import source2pl_zernike, \
+    source2pl_kolmogorov
 from seidr.seidr_functions_misc import plot_wf_psf_zernike_lp, \
     make_wf_psf_zernike_video_square, make_wf_psf_lp_pl_zernike_video_row, \
-    plot_wf_psf_lp_pl, make_wf_psf_lp_pl_video_row
+    plot_wf_psf_lp_pl, make_wf_psf_lp_pl_video_row, get_filenames
+
+#%%########################################################################
+### Define Simulation Type ###
+
+# whether to run temporal simulations with evolving wavefronts, or just static sims with one wavefront per simulation
+temporal = True
+
+wf_type = "nn_predictions" # "zernike" or "kolmogorov" or "nn_predictions" or "tiptilt" or "baldr"
+
+if wf_type == "nn_predictions":
+    pred_type = "baldr_contig" # only used when wf_type == "nn_predictions"
+                                    # "kolmogorov_contig", "kolmogorov_rand", "tiptilt_contig", "tiptilt_rand", "baldr_contig"
+
+    nn_type = "cnn" # only used when wf_type == "nn_predictions": "tnn" or "cnn"
+
+else:
+    pred_type = None
+    nn_type = None
+
 
 #%%########################################################################
 ### Filenames ###
@@ -34,17 +53,25 @@ f_pl_name = "hms-pl6c"
 f_pl_path = "/import/roci1/nlon0790/Results/hms-pl6/cores/"
 
 ## zernike wavefronts
-f_zern_pref = "_zern"
+f_zern_pref = "_zernike" 
 
+## tiptilt wavefronts
+f_tt_pref = "_tiptilt" 
 
 ## kolmogorov wavefronts
 f_wf_path = '/import/roci2/sail/data/PL_IRTestbed/2024_files-combined/'
-f_wf_name = 'slmcube_202400708_seeing_0.4-10-scl1_contig-flatn1000_10K_01_files-combined.npz'
 f_kol_pref = '_kol'
+if temporal:
+    f_wf_name = 'slmcube_202400708_seeing_0.4-10-scl1_contig-flatn1000_10K_01_files-combined.npz'
+else:
+    f_wf_name = 'slmcube_202400708_seeing_0.4-10-scl1_rand-flatn2_10K_01_files-combined.npz'
+
+## baldr wavefronts
+f_baldr_path = '/import/roci1/nlon0790/Results/phase_screens/baldr/post_baldr_residual_cube_parts0000_0009_noresets.fits'
+
 
 ## predictions from TNN
 tnndir   = '/import/roci1/nlon0790/Results/proteus/outputs/'
-preds_fname = 'seidr_tnn_plcin_wfout_npl6_20260602-1523_preds.npz'
 f_pred_pref = '_preds'
 
 #%%########################################################################
@@ -53,7 +80,13 @@ f_pred_pref = '_preds'
 print("Setting HMSPL and simulation parameters...")
 
 ## Simulation parameters
-n_sims = 100000 #None # number of simulations to run
+
+# number of sims
+if wf_type == "zernike" or wf_type == "tiptilt":
+    n_sims = 100000 # number of simulations to run
+else:
+    n_sims = None # use all available phase screens in the dataset
+                  # (set below once the data file is loaded)
 
 wavel = 1.55 # wavelenth [um]
 
@@ -96,96 +129,106 @@ n_clad_mm = 1.435
 #%%########################################################################
 ## Set Phase Screen Type ##
 
-wf_type = "zernike" # "zernike" or "kolmogorov" or "tnn_predictions"
+
+f_data, f_plot, f_plot_row, f_video = get_filenames(
+    wf_type, pred_type, nn_type, temporal,
+    dir, dir_plot, f_pl_name,
+    f_zern_pref, f_tt_pref, f_kol_pref, f_pred_pref,
+    outname_datetime,
+)
 
 if wf_type == "zernike":
     print("Using Zernike wavefronts with random coefficients.")
-    f_data = dir + f_pl_name + f_zern_pref + "_wf_psf_lp_dataset_" + outname_datetime + ".npz"
+    n_zernikes = 30  # number of Zernike modes to include in the random aberrations
 
+    print(f"  Including Zernike modes 2 to {n_zernikes+1}.")
+    max_rms_per_mode = 7e-8 #0.4 [m]
+    min_rms_per_mode = 1e-8 #0.05 [m]
+    smooth_amt = 7 # Gaussian kernel samples / time steps
 
-    f_plot = dir_plot + "seidr_wf_psf_lp_zernike_example.pdf" #+ outname_datetime + ".pdf"
-    f_plot_row = dir_plot + "seidr_wf_psf_lp_row_zernike_example.pdf" #+ outname_datetime + "_row.pdf"
-    f_video = dir_plot + "seidr_wf_psf_lp_zernike_evolution.gif" #+ outname_datetime + ".gif"
-
+elif wf_type == "tiptilt":
+    print("Using tiptilt wavefronts with random coefficients.")
     n_zernikes = 3  # number of Zernike modes to include in the random aberrations
 
-    # Vary RMS per zernike mode, with a linear drop-off from start to end mode
-    # if max_rms_per_mode == min_rms_per_mode, then only defining tip/tilt
-    if n_zernikes == 3:
-        print("  Only including tip/tilt and defocus (Zernike modes 2, 3, and 4).")
-        max_rms_per_mode = 3e-8 #7e-8 #0.4 [m]
-        min_rms_per_mode = 3e-8 #1e-8 #0.05 [m]
-    else:
-        print(f"  Including Zernike modes 2 to {n_zernikes+1}.")
-        max_rms_per_mode = 7e-8 #0.4 [m]
-        min_rms_per_mode = 1e-8 #0.05 [m]
-
-    ## Define Zernike coefficient wavefront error RMS values using Gaussian kernel smoothing
+    print("  Only including tip/tilt (Zernike modes 2, 3).")
+    max_rms_per_mode = 1e-7 #7e-8 #0.4 [m]
+    min_rms_per_mode = 1e-7 #1e-8 #0.05 [m]
     smooth_amt = 7 # Gaussian kernel samples / time steps
-        
-    # ## Wavefront error RMS
-    # tiptilt_rms = 3e-8 # m None
-    # ho_rms = 5e-8 # m
 
 elif wf_type == "kolmogorov":
     print("Using Kolmogorov wavefronts with random temporal evolution.")
-    f_data = dir + f_pl_name + f_kol_pref + "_wf_psf_lp_dataset_slmcube_202400708_seeing_0.4-10-scl1_contig_" + outname_datetime + ".npz"
-
-
-    f_plot = dir_plot + "seidr_wf_psf_lp_example.pdf" #+ outname_datetime + ".pdf"
-    f_plot_row = dir_plot + "seidr_wf_psf_lp_row_example.pdf" #+ outname_datetime + "_row.pdf"
-    f_video = dir_plot + "seidr_wf_psf_lp_evolution.gif" #+ outname_datetime + ".gif"
-
     wf_data = np.load(f_wf_path + f_wf_name)
-    phase_screens = wf_data['all_pupphase'][1:]  # (n_sims, 64, 64) [rad]
-    
+    if temporal:
+        phase_screens = wf_data['all_pupphase'][1:]             # (n_sims, 64, 64) [rad]
+    else:
+        # rand file has flat reference frames at every even index (all identical);
+        # odd indices are the actual varied phase screens
+        phase_screens = wf_data['all_pupphase'][1::2][:100000]  # (100000, 64, 64) [rad]
     if n_sims is None:
         n_sims = phase_screens.shape[0]
         print(f"Setting n_sims to {n_sims} based on the number of available phase screens in the dataset.")
 
+elif wf_type == "baldr":
+    from astropy.io import fits
+    print(f"Using Baldr residual OPD screens from {f_baldr_path}.")
+    with fits.open(f_baldr_path) as hdul:
+        opd_nm = hdul[0].data.astype(np.float64)   # (n_frames, 68, 68), nm OPD
+    # Replace NaN (non-pupil pixels from pupil mask) with zero phase
+    opd_nm = np.nan_to_num(opd_nm, nan=0.0)
+    # Convert nm OPD -> radians at science wavelength
+    phase_screens = opd_nm * 1e-9 * (2 * np.pi / (wavel * 1e-6))  # (n_frames, 68, 68) [rad]
+    if n_sims is None:
+        n_sims = phase_screens.shape[0]
+        print(f"Setting n_sims to {n_sims} based on the number of available Baldr frames.")
 
-elif wf_type == "tnn_predictions":
-    print("Using TNN predictions for wavefronts.")
-    f_data = dir + f_pl_name + f_pred_pref + "_wf_psf_lp_dataset_slmcube_202400708_seeing_0.4-10-scl1_contig_" + outname_datetime + ".npz"
 
-
-    f_plot = dir_plot + "seidr_wf_psf_lp_pred_example.pdf" #+ outname_datetime + ".pdf"
-    f_plot_row = dir_plot + "seidr_wf_psf_lp_row_pred_example.pdf" #+ outname_datetime + "_row.pdf"
-    f_video = dir_plot + "seidr_wf_psf_lp_pred_evolution.gif" #+ outname_datetime + ".gif"
-
+elif wf_type == "nn_predictions":
+    print(f"Using NN predictions for wavefronts (pred_type={pred_type}).")
+    _preds_fnames = {
+        "tnn": {
+            "kolmogorov_contig": 'seidr_tnn_seq_plcin_wfout_kol_contig_npl6_20260609-1555_preds.npz',
+            "kolmogorov_rand":       'seidr_tnn_plcin_wfout_kol_rand_npl6_20260610-1005_preds.npz',                          # placeholder
+            "tiptilt_contig":    'seidr_tnn_seq_plcin_wfout_tiptilt_contig_npl6_20260609-2003_preds.npz',                       # placeholder
+            "tiptilt_rand":          'seidr_tnn_plcin_wfout_tiptilt_rand_npl6_20260609-2203_preds.npz',                  # placeholder
+            "baldr_contig":          'seidr_tnn_seq_plcin_wfout_baldr_contig_npl6_20260615-1640_preds.npz',
+        },
+        "cnn": {
+            "kolmogorov_contig":     'seidr_cnn_plcin_wfout_kol_contig_npl6_20260609-1826_preds.npz',                    # placeholder
+            "kolmogorov_rand":       'seidr_cnn_plcin_wfout_kol_rand_npl6_20260610-1010_preds.npz',                      # placeholder
+            "tiptilt_contig":        'seidr_cnn_plcin_wfout_tiptilt_contig_npl6_20260609-2030_preds.npz',                       # placeholder
+            "tiptilt_rand":          'seidr_cnn_plcin_wfout_tiptilt_rand_npl6_20260609-2158_preds.npz',                  # placeholder
+            "baldr_contig":          'seidr_cnn_plcin_wfout_baldr_contig_npl6_20260616-1418_preds.npz',                                                                                   # placeholder
+        },
+    }
+    preds_fname = _preds_fnames[nn_type][pred_type]
     preds_data = np.load(tnndir + preds_fname)
     phase_screens = preds_data['residual_wf_array']  # (n_sims, 64, 64) [rad]
-
     if n_sims is None:
         n_sims = phase_screens.shape[0]
         print(f"Setting n_sims to {n_sims} based on the number of available phase screens in the dataset.")
 
-else:
-    raise ValueError(f"Invalid wf_type: {wf_type}. Must be 'zernike' or 'kolmogorov'.")
-
-
 #%%
-if wf_type == "kolmogorov" or wf_type == "tnn_predictions":
-    num = np.random.randint(0, phase_screens.shape[0]-3)
-    fig, axes = plt.subplots(1, 3, figsize=(10, 3.5), constrained_layout=True)
-    # vmin, vmax = phase_screens[:3].min(), phase_screens[:3].max()
-    for k, ax in enumerate(axes):
-        im = ax.imshow(phase_screens[num+k], 
-                       cmap="twilight", 
-                       vmin=-np.pi, vmax=np.pi, 
-                       origin="lower")
-        ax.set_title(f"Phase Screen {num+k}")
-        ax.set_xticks([])
-        ax.set_yticks([])
+# if wf_type == "kolmogorov" or wf_type == "nn_predictions":
+#     num = np.random.randint(0, phase_screens.shape[0]-3)
+#     fig, axes = plt.subplots(1, 3, figsize=(10, 3.5), constrained_layout=True)
+#     # vmin, vmax = phase_screens[:3].min(), phase_screens[:3].max()
+#     for k, ax in enumerate(axes):
+#         im = ax.imshow(phase_screens[num+k], 
+#                        cmap="twilight", 
+#                        vmin=-np.pi, vmax=np.pi, 
+#                        origin="lower")
+#         ax.set_title(f"Phase Screen {num+k}")
+#         ax.set_xticks([])
+#         ax.set_yticks([])
 
-    fig.colorbar(im, ax=axes, label="phase [rad]", fraction=0.02, pad=0.04)
-    plt.show()
+#     fig.colorbar(im, ax=axes, label="phase [rad]", fraction=0.02, pad=0.04)
+#     plt.show()
 
 
 
 #%%#########################################################################
 save_data = True # whether to save the generated dataset to disk
-plot_example = True # whether to plot one example of the generated PSF, wavefront, and LP powers
+plot_example = False # whether to plot one example of the generated PSF, wavefront, and LP powers
 save_video = False # whether to save the video to disk
 
 #%%########################################################################
@@ -193,9 +236,12 @@ if __name__ == "__main__":
 
     print("Running simulations...")
     
-    if wf_type == "zernike":
-        print(f"Generating random Zernike coefficients with max RMS {max_rms_per_mode} m and min RMS {min_rms_per_mode} m, smoothed with a Gaussian kernel of {smooth_amt} samples.")
-        lf, results = source2pl_zernike_temporal(
+    if wf_type == "zernike" or wf_type == "tiptilt":
+        if temporal:
+            print(f"Generating temporally-evolving Zernike coefficients with max RMS {max_rms_per_mode} m and min RMS {min_rms_per_mode} m, smoothed with a Gaussian kernel of {smooth_amt} samples.")
+        else:
+            print(f"Generating independently random Zernike coefficients with max RMS {max_rms_per_mode} m and min RMS {min_rms_per_mode} m (no temporal correlation).")
+        lf, results = source2pl_zernike(
             n_sims=n_sims,
             wavel=wavel,
             f_number=f_number,
@@ -209,6 +255,7 @@ if __name__ == "__main__":
             n_zernikes=n_zernikes,
             max_rms_perterm=max_rms_per_mode,
             min_rms_perterm=min_rms_per_mode,
+            temporal=temporal,
             smooth_amt=smooth_amt,
             f_pl_path=f_pl_path,
             f_pl_name=f_pl_name,
@@ -225,7 +272,7 @@ if __name__ == "__main__":
 
     elif wf_type == "kolmogorov":
         print(f"Using Kolmogorov wavefronts loaded from {f_wf_path + f_wf_name} with shape {phase_screens.shape}.")
-        lf, results = source2pl_kolmogorov_temporal(
+        lf, results = source2pl_kolmogorov(
             phase_screens=phase_screens,
             wavel=wavel,
             f_number=f_number,
@@ -247,9 +294,9 @@ if __name__ == "__main__":
             tr=taper_ratio,
         )
 
-    elif wf_type == "tnn_predictions":
-        print(f"Using TNN predictions loaded from {tnndir + preds_fname} with shape {phase_screens.shape}.")
-        lf, results = source2pl_kolmogorov_temporal(
+    elif wf_type == "nn_predictions":
+        print(f"Using NN predictions loaded from {tnndir + preds_fname} with shape {phase_screens.shape}.")
+        lf, results = source2pl_kolmogorov(
             phase_screens=phase_screens,
             wavel=wavel,
             f_number=f_number,
@@ -265,9 +312,33 @@ if __name__ == "__main__":
             r_core=r_ms,
             ds=ds,
             dz=dz,
-            rv=rv, 
+            rv=rv,
             xywidth=xywidth,
-            z_len=z_len, 
+            z_len=z_len,
+            tr=taper_ratio,
+        )
+
+    elif wf_type == "baldr":
+        print(f"Using Baldr OPD screens from {f_baldr_path} with shape {phase_screens.shape}.")
+        lf, results = source2pl_kolmogorov(
+            phase_screens=phase_screens,
+            wavel=wavel,
+            f_number=f_number,
+            pupil_diameter=pupil_diameter,
+            n_core=n_core_mm,
+            n_cladding=n_clad_mm,
+            core_diameter=d_core_mm,
+            max_r=max_r,
+            wf_npixels=wf_npixels,
+            psf_npixels=psf_npixels,
+            f_pl_path=f_pl_path,
+            f_pl_name=f_pl_name,
+            r_core=r_ms,
+            ds=ds,
+            dz=dz,
+            rv=rv,
+            xywidth=xywidth,
+            z_len=z_len,
             tr=taper_ratio,
         )
 
@@ -287,15 +358,15 @@ if __name__ == "__main__":
     idx_rand = np.random.randint(0, n_sims) # pick a random simulation to plot
 
     if plot_example:
-        if wf_type == "zernike":
+        if wf_type == "zernike" or wf_type == "tiptilt":
             plot_wf_psf_zernike_lp(results, idx=idx_rand, save_plot=True,
                                 fname_plot=f_plot)
-        elif wf_type == "kolmogorov" or wf_type == "tnn_predictions":
+        elif wf_type == "kolmogorov" or wf_type == "nn_predictions" or wf_type == "baldr":
             plot_wf_psf_lp_pl(results, idx=idx_rand, save_plot=True,
-                                fname_plot=f_plot_row)
+                                fname_plot=f_plot)
 
     if save_video:
-        if wf_type == "zernike":
+        if wf_type == "zernike" or wf_type == "tiptilt":
             # make_wf_psf_zernike_video_square(results, outname=f_video,
             #                   save_video=save_video, fps=30, dpi=150)
             
@@ -303,8 +374,8 @@ if __name__ == "__main__":
                                         outname=f_video.replace(".gif", "_row.gif"),
                                         save_video=save_video, fps=30, dpi=150)
         
-        elif wf_type == "kolmogorov":
-            make_wf_psf_lp_pl_video_row(results, 
+        elif wf_type == "kolmogorov" or wf_type == "baldr":
+            make_wf_psf_lp_pl_video_row(results,
                                         outname=f_video.replace(".gif", "_row.gif"),
                                         save_video=save_video, fps=30, dpi=150)
 
@@ -313,7 +384,7 @@ if __name__ == "__main__":
     ### Save Dataset ###
     if save_data:
         print("Saving dataset to disk...")
-        if wf_type == "zernike":
+        if wf_type == "zernike" or wf_type == "tiptilt":
             np.savez(
                 f_data,
                 total_coupling=results["total_coupling"],
@@ -327,7 +398,7 @@ if __name__ == "__main__":
                 pl_powers=results["pl_powers"],
             )
 
-        elif wf_type == "kolmogorov" or wf_type == "tnn_predictions":
+        elif wf_type == "kolmogorov" or wf_type == "nn_predictions" or wf_type == "baldr":
             np.savez(
                 f_data,
                 total_coupling=results["total_coupling"],

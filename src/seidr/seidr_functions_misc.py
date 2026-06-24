@@ -1920,6 +1920,59 @@ def vector_to_wf(vec, wf_shape, mask=None):
     return out
 
 
+##############################################################################
+def strehl_ratio(method="marechal", pupil_wf=None, pupil_mask=None,
+                  psf_intensity=None, ref_psf=None):
+    """
+    Compute the per-frame Strehl ratio, either via the Marechal phase-variance
+    approximation or directly from PSF image data.
+
+    Parameters
+    ----------
+    method : {'marechal', 'direct'}
+        'marechal' : S = exp(-sigma^2), where sigma^2 is the piston-removed
+            pupil-plane phase variance [rad^2]. Requires `pupil_wf` and
+            `pupil_mask`.
+        'direct' : ratio of the peak PSF intensity to the peak of a
+            diffraction-limited reference PSF, both normalised to unit
+            total flux. Requires `psf_intensity` and `ref_psf`.
+    pupil_wf : ndarray, shape (N, H, W), optional
+        Pupil-plane phase [rad]. Required for method='marechal'.
+    pupil_mask : ndarray, shape (H, W), bool, optional
+        Circular pupil mask (see make_pupil_mask). Required for
+        method='marechal'.
+    psf_intensity : ndarray, shape (N, H, W), optional
+        Focal-plane PSF intensity, e.g. np.abs(psf_fields)**2. Required for
+        method='direct'.
+    ref_psf : ndarray, shape (H, W), optional
+        Diffraction-limited reference PSF intensity, computed from the same
+        optical system with zero aberration. Required for method='direct'.
+
+    Returns
+    -------
+    strehl : ndarray, shape (N,)
+        Strehl ratio per frame.
+    """
+    if method == "marechal":
+        if pupil_wf is None or pupil_mask is None:
+            raise ValueError("method='marechal' requires pupil_wf and pupil_mask.")
+        wf_px = pupil_wf[:, pupil_mask]
+        wf_px = wf_px - wf_px.mean(axis=-1, keepdims=True)  # remove piston
+        sigma2 = wf_px.var(axis=-1)
+        return np.exp(-sigma2)
+
+    elif method == "direct":
+        if psf_intensity is None or ref_psf is None:
+            raise ValueError("method='direct' requires psf_intensity and ref_psf.")
+        flux = psf_intensity.sum(axis=(-2, -1), keepdims=True)
+        norm_psf = psf_intensity / flux
+        ref_norm = ref_psf / ref_psf.sum()
+        return norm_psf.max(axis=(-2, -1)) / ref_norm.max()
+
+    else:
+        raise ValueError(f"Unknown method: {method!r}. Use 'marechal' or 'direct'.")
+
+
 ###########################################################################
 def plot_histograms(
     data_list,
@@ -1929,7 +1982,7 @@ def plot_histograms(
     figsize=(8, 4),
     xlim=None,
     xlabel='Value',
-    ylabel='Count',
+    ylabel='PDF',
     title=None,
     show_mean=True,
     save_path=None,
@@ -1961,17 +2014,30 @@ def plot_histograms(
     fig, ax = plt.subplots(figsize=figsize, tight_layout=True)
 
     for data, label, color in zip(data_list, labels, colors):
-        ax.hist(data, bins=bins, histtype='stepfilled',
-                alpha=0.4, color=color, label=label)
-        ax.hist(data, bins=bins, histtype='step',
-                linewidth=1.5, color=color)
+        weights = np.ones_like(data) / len(data)
+        ax.hist(data,
+                bins=bins,
+                histtype='stepfilled',
+                alpha=0.4,
+                color=color,
+                label=label,
+                weights=weights)
+        ax.hist(data,
+                bins=bins,
+                histtype='step',
+                linewidth=1.5,
+                color=color,
+                weights=weights)
+        
         if show_mean:
             ax.axvline(data.mean(), color=color, linestyle='--',
                        linewidth=1.2, label=f'{label} mean={data.mean():.3f}')
 
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    ax.grid(which='both', linestyle=':', linewidth=0.5, alpha=0.7)
+    ax.grid(which='both', linestyle=':', 
+            linewidth=0.5, 
+            alpha=0.7)
 
     if xlim is not None:
         ax.set_xlim(xlim)
@@ -1979,7 +2045,7 @@ def plot_histograms(
     if title:
         ax.set_title(title, fontsize=12)
 
-    ax.legend(fontsize=9)
+    ax.legend(fontsize=10)
 
     if save_path is not None:
         plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
@@ -2092,3 +2158,73 @@ def plot_wf_predictions_compare(
         print(f"  Saved comparison plot to {os.path.basename(save_path)}")
 
     return fig
+
+###############################################################################
+def get_filenames(wf_type, pred_type, nn_type, temporal,
+                  dir, dir_plot, f_pl_name,
+                  f_zern_pref, f_tt_pref, f_kol_pref, f_pred_pref,
+                  outname_datetime):
+
+    variant = "contig" if temporal else "rand"
+    if wf_type == "zernike":
+        f_data     = dir      + f_pl_name + f_zern_pref + f"_wf_psf_lp_dataset_{variant}_" + outname_datetime + ".npz"
+        f_plot     = dir_plot + f"seidr_wf_psf_lp_zernike_{variant}_example.pdf"
+        f_plot_row = dir_plot + f"seidr_wf_psf_lp_row_zernike_{variant}_example.pdf"
+        f_video    = dir_plot + f"seidr_wf_psf_lp_zernike_{variant}_evolution.gif"
+    elif wf_type == "tiptilt":
+        f_data     = dir      + f_pl_name + f_tt_pref + f"_wf_psf_lp_dataset_{variant}_" + outname_datetime + ".npz"
+        f_plot     = dir_plot + f"seidr_wf_psf_lp_tiptilt_{variant}_example.pdf"
+        f_plot_row = dir_plot + f"seidr_wf_psf_lp_row_tiptilt_{variant}_example.pdf"
+        f_video    = dir_plot + f"seidr_wf_psf_lp_tiptilt_{variant}_evolution.gif"
+    elif wf_type == "kolmogorov":
+        f_data     = dir      + f_pl_name + f_kol_pref + f"_wf_psf_lp_dataset_slmcube_202400708_seeing_0.4-10-scl1_{variant}_" + outname_datetime + ".npz"
+        f_plot     = dir_plot + f"seidr_wf_psf_lp_kol_{variant}_example.pdf"
+        f_plot_row = dir_plot + f"seidr_wf_psf_lp_row_kol_{variant}_example.pdf"
+        f_video    = dir_plot + f"seidr_wf_psf_lp_kol_{variant}_evolution.gif"
+    elif wf_type == "nn_predictions":
+        _base_labels = {
+            "kolmogorov_contig":     "kol_contig",
+            "kolmogorov_contig_seq": "kol_contig_seq",
+            "kolmogorov_rand":       "kol_rand",
+            "tiptilt_contig":        "tiptilt_contig",
+            "tiptilt_contig_seq":    "tiptilt_contig_seq",
+            "tiptilt_rand":          "tiptilt_rand",
+            "baldr_contig":          "baldr_contig",
+        }
+        if pred_type not in _base_labels:
+            raise ValueError(f"Invalid pred_type: {pred_type}.")
+        if nn_type not in ("tnn", "cnn"):
+            raise ValueError(f"Invalid nn_type: {nn_type}. Must be 'tnn' or 'cnn'.")
+        lbl = f"pred_{nn_type}_{_base_labels[pred_type]}"
+        f_data     = dir      + f_pl_name + f"_{lbl}_wf_psf_lp_dataset_" + outname_datetime + ".npz"
+        f_plot     = dir_plot + f"seidr_wf_psf_lp_{lbl}_example.pdf"
+        f_plot_row = dir_plot + f"seidr_wf_psf_lp_row_{lbl}_example.pdf"
+        f_video    = dir_plot + f"seidr_wf_psf_lp_{lbl}_evolution.gif"
+    elif wf_type == "baldr":
+        f_data     = dir      + f_pl_name + "_baldr_wf_psf_lp_dataset_" + outname_datetime + ".npz"
+        f_plot     = dir_plot + "seidr_wf_psf_lp_baldr_example.pdf"
+        f_plot_row = dir_plot + "seidr_wf_psf_lp_row_baldr_example.pdf"
+        f_video    = dir_plot + "seidr_wf_psf_lp_baldr_evolution.gif"
+    else:
+        raise ValueError(f"Invalid wf_type: {wf_type}.")
+    return f_data, f_plot, f_plot_row, f_video
+
+
+###############################################################################
+def load_dataset(fpath, is_raw, val_split,
+                 test_split, _KEYS):
+    d = np.load(fpath, allow_pickle=True)
+    if is_raw:
+        N = d['pupil_wf'].shape[0]
+        n_val  = int(N * val_split)
+        n_test = int(N * test_split)
+        idx = slice(n_val, n_val + n_test)
+        result = {k: d[k][idx] for k in _KEYS} | {'modelabels': d['modelabels']}
+    else:
+        idx = slice(None)
+        result = {k: d[k][idx] for k in _KEYS} | {'modelabels': d['modelabels']}
+        # pupil_wf in prediction output files stores the residual wavefront
+        # (original − NN correction). Expose it as residual_wf; pupil_wf will be
+        # overridden with the original input wavefront after all datasets are loaded.
+        result['residual_wf'] = result['pupil_wf']
+    return result
