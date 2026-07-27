@@ -1896,6 +1896,30 @@ def make_pupil_mask(shape):
 
 
 ##############################################################################
+def make_pupil_mask_baldr(shape, edge_radius=27):
+    """Boolean circular pupil mask for Baldr wavefronts, eroded to exclude
+    the spurious high-error ring at the pupil edge.
+
+    The Baldr-reconstructed OPD screens carry a reconstruction artifact
+    already present in the raw FITS data (verified at its native 68x68
+    resolution, so this is not a poppy/resampling artifact introduced later
+    in the propagation pipeline): a ring a few pixels wide, just inside the
+    static aperture edge, where per-pixel OPD std ramps from a ~95 nm
+    turbulence baseline up to >300 nm (3x+) right at the edge. This ring is
+    absent from the Kolmogorov/tiptilt datasets, whose per-pixel std is flat
+    right up to the aperture edge. `edge_radius=27` (vs. the full aperture
+    radius of ~32, whether on the native 68x68 grid or the resampled 64x64
+    grid used downstream) trims that ring while keeping ~71-70% of the
+    pupil area.
+    """
+    H, W = shape
+    y = np.arange(H) - H // 2
+    x = np.arange(W) - W // 2
+    X, Y = np.meshgrid(x, y)
+    return X**2 + Y**2 <= edge_radius ** 2
+
+
+##############################################################################
 def wf_to_vector(wf, mask=None):
     """Flatten (N, H, W) wavefront array to (N, n_px).
 

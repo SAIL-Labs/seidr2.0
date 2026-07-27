@@ -10,12 +10,14 @@ import jax.numpy as jnp
 import jax.random as jr
 import matplotlib.pyplot as plt
 import datetime
+from astropy.io import fits
 
 from seidr.source2pl import source2pl_zernike, \
     source2pl_kolmogorov
 from seidr.seidr_functions_misc import plot_wf_psf_zernike_lp, \
     make_wf_psf_zernike_video_square, make_wf_psf_lp_pl_zernike_video_row, \
-    plot_wf_psf_lp_pl, make_wf_psf_lp_pl_video_row, get_filenames
+    plot_wf_psf_lp_pl, make_wf_psf_lp_pl_video_row, get_filenames, \
+    make_pupil_mask_baldr
 
 #%%########################################################################
 ### Define Simulation Type ###
@@ -169,14 +171,38 @@ elif wf_type == "kolmogorov":
         print(f"Setting n_sims to {n_sims} based on the number of available phase screens in the dataset.")
 
 elif wf_type == "baldr":
-    from astropy.io import fits
     print(f"Using Baldr residual OPD screens from {f_baldr_path}.")
     with fits.open(f_baldr_path) as hdul:
         opd_nm = hdul[0].data.astype(np.float64)   # (n_frames, 68, 68), nm OPD
-    # Replace NaN (non-pupil pixels from pupil mask) with zero phase
+    # The raw OPD screens carry a reconstruction artifact baked in at the pupil
+    # edge (per-pixel OPD std ramps from ~95 nm baseline to >300 nm in the
+    # outermost few pixels -- confirmed at this native 68x68 resolution, so it
+    # is not a downstream resampling artifact). Erode the pupil to exclude it,
+    # then crop the array to tightly bound the eroded pupil so the wavefronts
+    # no longer carry a ring of now-unused zero padding.
+    N_orig_baldr = opd_nm.shape[-1]
+    edge_mask = make_pupil_mask_baldr(opd_nm.shape[-2:])
+    _rows = np.where(edge_mask.any(axis=1))[0]
+    _cols = np.where(edge_mask.any(axis=0))[0]
+    r0, r1 = _rows[0], _rows[-1]
+    c0, c1 = _cols[0], _cols[-1]
+    opd_nm = opd_nm[:, r0:r1 + 1, c0:c1 + 1]
+    edge_mask = edge_mask[r0:r1 + 1, c0:c1 + 1]
+    wf_npixels_baldr = opd_nm.shape[-1]
+    # Preserve the original per-pixel physical scale: shrinking the array from
+    # N_orig_baldr to wf_npixels_baldr pixels means the effective clear
+    # aperture is correspondingly smaller than the nominal pupil_diameter.
+    pupil_diameter_baldr = pupil_diameter * (wf_npixels_baldr / N_orig_baldr)
+    f_number_baldr = focal_length / pupil_diameter_baldr
+    print(f"  Cropped Baldr pupil from {N_orig_baldr}x{N_orig_baldr} to "
+          f"{wf_npixels_baldr}x{wf_npixels_baldr} (effective pupil_diameter "
+          f"{pupil_diameter_baldr:.1f} um, f_number {f_number_baldr:.3f}).")
+
+    opd_nm[:, ~edge_mask] = np.nan
+    # Replace NaN (non-pupil pixels from pupil mask, plus the eroded edge ring) with zero phase
     opd_nm = np.nan_to_num(opd_nm, nan=0.0)
     # Convert nm OPD -> radians at science wavelength
-    phase_screens = opd_nm * 1e-9 * (2 * np.pi / (wavel * 1e-6))  # (n_frames, 68, 68) [rad]
+    phase_screens = opd_nm * 1e-9 * (2 * np.pi / (wavel * 1e-6))  # (n_frames, wf_npixels_baldr, wf_npixels_baldr) [rad]
     if n_sims is None:
         n_sims = phase_screens.shape[0]
         print(f"Setting n_sims to {n_sims} based on the number of available Baldr frames.")
@@ -190,22 +216,36 @@ elif wf_type == "nn_predictions":
             "kolmogorov_rand":       'seidr_tnn_plcin_wfout_kol_rand_npl6_20260610-1005_preds.npz',                          # placeholder
             "tiptilt_contig":    'seidr_tnn_seq_plcin_wfout_tiptilt_contig_npl6_20260609-2003_preds.npz',                       # placeholder
             "tiptilt_rand":          'seidr_tnn_plcin_wfout_tiptilt_rand_npl6_20260609-2203_preds.npz',                  # placeholder
-            "baldr_contig":          'seidr_tnn_seq_plcin_wfout_baldr_contig_npl6_20260615-1640_preds.npz',
+            "baldr_contig":          'seidr_tnn_seq_plcin_wfout_baldr_contig_npl6_20260720-0554_preds.npz',
         },
         "cnn": {
             "kolmogorov_contig":     'seidr_cnn_plcin_wfout_kol_contig_npl6_20260609-1826_preds.npz',                    # placeholder
             "kolmogorov_rand":       'seidr_cnn_plcin_wfout_kol_rand_npl6_20260610-1010_preds.npz',                      # placeholder
             "tiptilt_contig":        'seidr_cnn_plcin_wfout_tiptilt_contig_npl6_20260609-2030_preds.npz',                       # placeholder
             "tiptilt_rand":          'seidr_cnn_plcin_wfout_tiptilt_rand_npl6_20260609-2158_preds.npz',                  # placeholder
-            "baldr_contig":          'seidr_cnn_plcin_wfout_baldr_contig_npl6_20260616-1418_preds.npz',                                                                                   # placeholder
+            "baldr_contig":          'seidr_cnn_plcin_wfout_baldr_contig_npl6_20260720-0945_preds.npz',                                                                                   # placeholder
         },
     }
     preds_fname = _preds_fnames[nn_type][pred_type]
     preds_data = np.load(tnndir + preds_fname)
-    phase_screens = preds_data['residual_wf_array']  # (n_sims, 64, 64) [rad]
+    phase_screens = preds_data['residual_wf_array']  # (n_sims, H, W) [rad]
     if n_sims is None:
         n_sims = phase_screens.shape[0]
         print(f"Setting n_sims to {n_sims} based on the number of available phase screens in the dataset.")
+
+    if pred_type == "baldr_contig":
+        # Baldr NN residuals are already cropped to the reduced pupil (see the
+        # wf_type == "baldr" branch above); mirror the same aperture scaling
+        # here so this re-propagation isn't a mismatched 64x64/full-aperture
+        # run against a 55x55 input. Other pred_types keep the global
+        # wf_npixels/pupil_diameter/f_number since they're not cropped.
+        with fits.open(f_baldr_path, memmap=True) as hdul:
+            N_orig_baldr = hdul[0].data.shape[-1]   # native FITS grid size, e.g. 68
+        wf_npixels_baldr = phase_screens.shape[-1]
+        pupil_diameter_baldr = pupil_diameter * (wf_npixels_baldr / N_orig_baldr)
+        f_number_baldr = focal_length / pupil_diameter_baldr
+        print(f"  Baldr predictions: using cropped pupil {wf_npixels_baldr}x{wf_npixels_baldr} "
+              f"(effective pupil_diameter {pupil_diameter_baldr:.1f} um, f_number {f_number_baldr:.3f}).")
 
 #%%
 # if wf_type == "kolmogorov" or wf_type == "nn_predictions":
@@ -228,7 +268,7 @@ elif wf_type == "nn_predictions":
 
 #%%#########################################################################
 save_data = True # whether to save the generated dataset to disk
-plot_example = False # whether to plot one example of the generated PSF, wavefront, and LP powers
+plot_example = True # whether to plot one example of the generated PSF, wavefront, and LP powers
 save_video = False # whether to save the video to disk
 
 #%%########################################################################
@@ -296,16 +336,20 @@ if __name__ == "__main__":
 
     elif wf_type == "nn_predictions":
         print(f"Using NN predictions loaded from {tnndir + preds_fname} with shape {phase_screens.shape}.")
+        if pred_type == "baldr_contig":
+            _f_number, _pupil_diameter, _wf_npixels = f_number_baldr, pupil_diameter_baldr, wf_npixels_baldr
+        else:
+            _f_number, _pupil_diameter, _wf_npixels = f_number, pupil_diameter, wf_npixels
         lf, results = source2pl_kolmogorov(
             phase_screens=phase_screens,
             wavel=wavel,
-            f_number=f_number,
-            pupil_diameter=pupil_diameter,
+            f_number=_f_number,
+            pupil_diameter=_pupil_diameter,
             n_core=n_core_mm,
             n_cladding=n_clad_mm,
             core_diameter=d_core_mm,
             max_r=max_r,
-            wf_npixels=wf_npixels,
+            wf_npixels=_wf_npixels,
             psf_npixels=psf_npixels,
             f_pl_path=f_pl_path,
             f_pl_name=f_pl_name,
@@ -323,13 +367,13 @@ if __name__ == "__main__":
         lf, results = source2pl_kolmogorov(
             phase_screens=phase_screens,
             wavel=wavel,
-            f_number=f_number,
-            pupil_diameter=pupil_diameter,
+            f_number=f_number_baldr,
+            pupil_diameter=pupil_diameter_baldr,
             n_core=n_core_mm,
             n_cladding=n_clad_mm,
             core_diameter=d_core_mm,
             max_r=max_r,
-            wf_npixels=wf_npixels,
+            wf_npixels=wf_npixels_baldr,
             psf_npixels=psf_npixels,
             f_pl_path=f_pl_path,
             f_pl_name=f_pl_name,

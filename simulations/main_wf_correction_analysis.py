@@ -39,9 +39,13 @@ dir_plot = '/suphys/nlon0790/Documents/python_code/seidr2.0/figures/'
 #%%########################################################################
 ### Control ###
 
-wf_type = "kolmogorov"   # "kolmogorov" or "tiptilt" or "baldr"
+wf_type = "baldr"   # "kolmogorov" or "tiptilt" or "baldr"
 
-sequential_length = 50    # length of input sequences for sequential models
+if wf_type == 'baldr':
+    sequential_length = 100    # length of input sequences for sequential models
+else:
+    sequential_length = 50    # length of input sequences for sequential models
+    
 val_split   = 0.15
 test_split  = 0.15
 
@@ -70,12 +74,12 @@ _DATASETS_KOL = {
 
 _DATASETS_BALDR = {
     ## uncorrected (raw)
-    "baldr_contig":     (dir_data + "hms-pl6c_baldr_wf_psf_lp_dataset_20260615-1417.npz",
+    "baldr_contig":     (dir_data + "hms-pl6c_baldr_wf_psf_lp_dataset_20260701-2025.npz",
                          True),
     ## corrected (tnn predictions re-propagated); no CNN or rand variant yet
-    "tnn_baldr_contig": (dir_data + "hms-pl6c_pred_tnn_baldr_contig_wf_psf_lp_dataset_20260616-1327.npz",
+    "tnn_baldr_contig": (dir_data + "hms-pl6c_pred_tnn_baldr_contig_wf_psf_lp_dataset_20260720-1302.npz",
                          False),
-    "cnn_baldr_contig": (dir_data + "hms-pl6c_pred_cnn_baldr_contig_wf_psf_lp_dataset_20260616-1546.npz",
+    "cnn_baldr_contig": (dir_data + "hms-pl6c_pred_cnn_baldr_contig_wf_psf_lp_dataset_20260720-1320.npz",
                          False),
 }
 
@@ -125,7 +129,7 @@ elif wf_type == "baldr":
     _k_cnn_contig = 'cnn_baldr_contig'
     _k_tnn_rand   = 'tnn_baldr_contig'   # no rand variant
     _k_cnn_rand   = 'cnn_baldr_contig'   # no rand variant
-    _wft          = 'Baldr'
+    _wft          = 'Post-Baldr'
 
 #%%########################################################################
 ### Load Datasets ###
@@ -323,7 +327,7 @@ plot_histograms(
     labels=_contig_labels,
     bins=100,
     figsize=(8, 4),
-    xlim=None,
+    xlim=[0.5, 0.95],
     xlabel='Strehl Ratio (Marechal approximation)',
     ylabel='PDF',
     title=f'{_wft} Contig: Uncorrected vs NN Corrected',
@@ -403,7 +407,8 @@ for ax, (title, (keys, labels)) in zip(axes, _groups.items()):
     ax.grid(which='both', linestyle=':', linewidth=0.5, alpha=0.7)
     ax.tick_params(axis='both', labelsize=14)
     # ax.set_title(title, fontsize=15, weight='semibold')
-    # ax.set_xlabel('Mode-Selective Core Power Ratio', fontsize=15, weight='semibold')
+    # ax.set_xlabel('Mode-Selective Core Power Ratio', 
+                #   fontsize=15)
     # ax.legend(prop={'size': 15, 'weight': 'semibold'})
     # ax.grid(which='both', linestyle=':', linewidth=0.5, alpha=0.7)
 
@@ -431,15 +436,16 @@ for ax, (title, (keys, labels)) in zip(axes, _groups.items()):
         ax.axvline(data.mean(), color=color, linestyle='--', linewidth=2, alpha=0.8)
 
     ax.plot([], [], color='k', linestyle='--', linewidth=2, alpha=0.8, label='Mean')
-    ax.set_title('')
-    ax.set_xlabel('')
+    ax.set_xlabel('Strehl Ratio', fontsize=17)
     ax.grid(which='both', linestyle=':', linewidth=0.5, alpha=0.7)
     ax.tick_params(axis='both', labelsize=14)
 
 axes[0].set_xlim([-0.01, 1.01])
 axes[1].set_xlim([-0.01, 1.01])
-axes[0].legend(prop={'size': 17})
-axes[0].set_ylabel('')
+axes[0].set_title('Random', fontsize=17)
+axes[1].set_title('Temporal', fontsize=17)
+axes[0].legend(prop={'size': 14})
+axes[0].set_ylabel('PDF', fontsize=17)
 fig.savefig(dir_plot + f'seidr_strehl_ratio_{wf_type}_contig_rand_combined.svg', dpi=150)
 plt.show()
 
@@ -467,7 +473,7 @@ ax.set_ylabel('PDF', fontsize=17)
 ax.legend(prop={'size': 15})
 ax.grid(which='both', linestyle=':', linewidth=0.5, alpha=0.7)
 ax.tick_params(axis='both', labelsize=14)
-fig.savefig(dir_plot + f'seidr_ms_core_ratio_{wf_type}_contig_tnn_vs_raw.pdf', dpi=150)
+fig.savefig(dir_plot + f'seidr_ms_core_ratio_{wf_type}_contig_tnn_vs_raw.svg', dpi=150)
 plt.show()
 
 #%%#########################################################################
@@ -531,7 +537,7 @@ plt.show()
 
 
 #%%#########################################################################
-### Grouped bar chart: mean ± 1σ core-0 ratio by dataset ###
+### Grouped bar chart: mean core-0 ratio by dataset ###
 
 _bar_groups = {
     'Random': [_k_rand,    _k_cnn_rand,    _k_tnn_rand],
@@ -551,13 +557,8 @@ fig, ax = plt.subplots(figsize=(9, 5), tight_layout=True)
 
 for i, (label, color) in enumerate(zip(_bar_labels, _bar_colors)):
     means = [core0_ratios[keys[i]].mean() for keys in _bar_groups.values()]
-    stds  = [core0_ratios[keys[i]].std()  for keys in _bar_groups.values()]
     ax.bar(_bar_x + offsets[i], means, width,
-           yerr=stds, capsize=5,
-           color=color, alpha=0.85, label=label,
-           error_kw={'linewidth': 3, 'ecolor': 'k', 'alpha': 0.6})
-
-ax.plot([], [], color='k', linestyle='-', linewidth=2, label=r'$\pm 1\sigma$')
+           color=color, alpha=0.85, label=label)
 
 # individual bar labels: True / CNN / TNN repeated per group
 _tick_pos    = [_bar_x[g] + offsets[i]
@@ -571,10 +572,6 @@ ax.set_ylim([0, 1])
 ax.tick_params(axis='y', labelsize=14)
 ax.tick_params(axis='x', length=0)
 ax.set_ylabel('', fontsize=13)
-_h, _l = ax.get_legend_handles_labels()
-_sigma_i = _l.index(r'$\pm 1\sigma$')
-ax.legend([_h[_sigma_i]], [_l[_sigma_i]],
-          prop={'size': 17}, loc='lower center')
 ax.grid(axis='y', linestyle=':', linewidth=0.6, alpha=0.7)
 ax.set_axisbelow(True)
 
@@ -584,7 +581,7 @@ plt.show()
 
 
 #%%#########################################################################
-### Grouped bar chart: mean ± 1σ Strehl ratio by dataset ###
+### Grouped bar chart: mean Strehl ratio by dataset ###
 
 _bar_groups = {
     'Random': [_k_rand,    _k_cnn_rand,    _k_tnn_rand],
@@ -605,13 +602,8 @@ fig, ax = plt.subplots(figsize=(9, 5), tight_layout=True)
 
 for i, (label, color) in enumerate(zip(_bar_labels, _bar_colors)):
     means = [strehl_ratios[keys[i]].mean() for keys in _bar_groups.values()]
-    stds  = [strehl_ratios[keys[i]].std()  for keys in _bar_groups.values()]
     ax.bar(_bar_x + offsets[i], means, width,
-           yerr=stds, capsize=5,
-           color=color, alpha=0.85, label=label,
-           error_kw={'linewidth': 3, 'ecolor': 'k', 'alpha': 0.6})
-
-ax.plot([], [], color='k', linestyle='-', linewidth=2, label=r'$\pm 1\sigma$')
+           color=color, alpha=0.85, label=label)
 
 # individual bar labels: True / CNN / TNN repeated per group
 _tick_pos    = [_bar_x[g] + offsets[i]
@@ -624,10 +616,6 @@ ax.set_ylim([0, 1.05])
 ax.tick_params(axis='y', labelsize=14)
 ax.tick_params(axis='x', length=0)
 ax.set_ylabel('', fontsize=13)
-_h, _l = ax.get_legend_handles_labels()
-_sigma_i = _l.index(r'$\pm 1\sigma$')
-ax.legend([_h[_sigma_i]], [_l[_sigma_i]],
-          prop={'size': 17}, loc='lower center')
 ax.grid(axis='y', linestyle=':', linewidth=0.6, alpha=0.7)
 ax.set_axisbelow(True)
 
@@ -637,14 +625,14 @@ plt.show()
 
 
 #%%#########################################################################
-### Grouped bar chart: mean ± 1σ residual wavefront RMS by dataset ###
+### Grouped bar chart: mean residual wavefront RMS by dataset ###
 
 _bar_groups = {
     'Random': [_k_rand,    _k_cnn_rand,    _k_tnn_rand],
     'Contig': [_k_contig,  _k_cnn_contig,  _k_tnn_contig],
 }
 _bar_labels = ['Uncorrected', 'CNN', 'TNN']
-_bar_colors = ['#969696', '#4393C3', '#D6604D']
+_bar_colors = ['#969696', '#D6604D', '#4393C3']
 
 n_models  = len(_bar_labels)
 n_groups  = len(_bar_groups)
@@ -658,30 +646,28 @@ fig, ax = plt.subplots(figsize=(9, 5), tight_layout=True)
 
 for i, (label, color) in enumerate(zip(_bar_labels, _bar_colors)):
     means = [wf_rms_residuals[keys[i]].mean() for keys in _bar_groups.values()]
-    stds  = [wf_rms_residuals[keys[i]].std()  for keys in _bar_groups.values()]
     ax.bar(_bar_x + offsets[i], means, width,
-           yerr=stds, capsize=5,
-           color=color, alpha=0.85, label=label,
-           error_kw={'linewidth': 3, 'ecolor': 'k', 'alpha': 0.6})
-
-ax.plot([], [], color='k', linestyle='-', linewidth=2, label=r'$\pm 1\sigma$')
+           color=color, alpha=0.85, label=label)
 
 # individual bar labels: True / CNN / TNN repeated per group
 _tick_pos    = [_bar_x[g] + offsets[i]
                 for g in range(n_groups) for i in range(n_models)]
 _tick_labels = ['Uncorrected', 'CNN', 'TNN'] * n_groups
 ax.set_xticks(_tick_pos)
-ax.set_xticklabels(_tick_labels, fontsize=13)
+ax.set_xticklabels(_tick_labels, fontsize=15)
 # ax.set_yscale('log')
-# ax.set_ylabel('Residual Wavefront RMS [rad]', fontsize=13)
+ax.set_ylabel('Mean Tip/Tilt RMS Error [rad]', fontsize=15)
 ax.tick_params(axis='y', labelsize=14)
 ax.tick_params(axis='x', length=0)
-_h, _l = ax.get_legend_handles_labels()
-_sigma_i = _l.index(r'$\pm 1\sigma$')
-ax.legend([_h[_sigma_i]], [_l[_sigma_i]],
-          prop={'size': 17}, loc='upper center')
 ax.grid(axis='y', linestyle=':', linewidth=0.6, alpha=0.7)
 ax.set_axisbelow(True)
+
+# group titles above each cluster of bars
+_group_titles = ['Random', 'Temporal']
+for g, title in enumerate(_group_titles):
+    ax.text(_bar_x[g], 1.05, title, transform=ax.get_xaxis_transform(),
+            ha='center', va='bottom', fontsize=16,
+            clip_on=False)
 
 fig.savefig(dir_plot + f'seidr_wf_rms_{wf_type}_bar.svg', dpi=150,
             bbox_inches='tight')
@@ -737,7 +723,7 @@ cnn_pred = preds[_k_cnn_contig]['pred_wf_array'][cnn_idxs]
 # Corresponding CNN indices: [13062 387 8524 4636 13516 6504
 
 rows       = [true_wfs, tnn_pred, cnn_pred]
-row_labels = ['True', 'TNN Pred.', 'CNN Pred.']
+row_labels = ['True WF', 'TNN WF Est.', 'CNN WF Est.']
 cmap = 'twilight'
 vmin, vmax = -np.pi, np.pi
 cbar_ticks      = [-np.pi, -np.pi/2, 0, np.pi/2, np.pi]
@@ -757,13 +743,74 @@ for row_idx, (wfs, rlabel) in enumerate(zip(rows, row_labels)):
         ax.set_xticks([])
         ax.set_yticks([])
         if col_idx == 0:
-            ax.set_ylabel(rlabel, fontsize=14)
-        if row_idx == 0:
-            ax.set_title(f'Frame {tnn_idxs[col_idx]}', fontsize=11)
+            ax.set_ylabel(rlabel, fontsize=15)
+        # if row_idx == 0:
+        #     ax.set_title(f'Frame {tnn_idxs[col_idx]}', fontsize=11)
     cbar_ax = axes[row_idx, n_cols]
     cb = fig.colorbar(im, cax=cbar_ax)
     cb.set_ticks(cbar_ticks)
     cb.set_ticklabels(cbar_ticklabels, fontsize=10)
+
+fig.savefig(dir_plot + f'seidr_wf_grid_true_tnn_cnn_{wf_type}_contig_preds.svg', dpi=150,
+            bbox_inches='tight')
+plt.show()
+
+
+#%%#########################################################################
+### Wavefront grid: True / TNN pred / CNN pred (from preds, 4 random frames) ###
+## Paper version ##
+
+rng    = np.random.default_rng()
+n_cols = 4
+# TNN[i] == CNN[i + sequential_length]: pick from TNN range, offset CNN indices
+n_tnn    = preds[_k_tnn_contig]['pred_wf_array'].shape[0]
+
+# tnn_idxs = rng.integers(0, n_tnn, size=n_cols)
+# cnn_idxs = tnn_idxs + sequential_length
+
+tnn_idxs = [13012, 4586, 13466, 14348]
+cnn_idxs = [13062, 4636, 13516, 14398]
+
+print(f"Selected TNN indices: {tnn_idxs}")
+print(f"Corresponding CNN indices: {cnn_idxs}")
+
+true_wfs = preds[_k_tnn_contig]['true_wf_array'][tnn_idxs]
+tnn_pred = preds[_k_tnn_contig]['pred_wf_array'][tnn_idxs]
+cnn_pred = preds[_k_cnn_contig]['pred_wf_array'][cnn_idxs]
+
+# Selected TNN indices: [13012 337 8474 4586 13466 6454
+# Corresponding CNN indices: [13062 387 8524 4636 13516 6504
+
+rows       = [true_wfs, tnn_pred, cnn_pred]
+row_labels = ['True WF', 'TNN WF Est.', 'CNN WF Est.']
+cmap = 'twilight'
+vmin, vmax = -np.pi, np.pi
+cbar_ticks      = [-np.pi, -np.pi/2, 0, np.pi/2, np.pi]
+cbar_ticklabels = [r'$-\pi$', r'$-\pi/2$', r'$0$', r'$\pi/2$', r'$\pi$']
+
+fig, axes = plt.subplots(
+    3, n_cols + 1,
+    figsize=(12, 7),
+    gridspec_kw={'width_ratios': [1]*n_cols + [0.06],
+                 'hspace': 0.04, 'wspace': 0.04},
+)
+
+for row_idx, (wfs, rlabel) in enumerate(zip(rows, row_labels)):
+    for col_idx in range(n_cols):
+        ax = axes[row_idx, col_idx]
+        im = ax.imshow(wfs[col_idx], cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        if col_idx == 0:
+            ax.set_ylabel(rlabel, fontsize=15)
+        # if row_idx == 0:
+        #     ax.set_title(f'Frame {tnn_idxs[col_idx]}', fontsize=11)
+    cbar_ax = axes[row_idx, n_cols]
+    cb = fig.colorbar(im, cax=cbar_ax)
+    cb.set_ticks(cbar_ticks)
+    cb.set_ticklabels(cbar_ticklabels, fontsize=10)
+    if row_idx == 0:
+        cbar_ax.set_title('Phase [rad]', fontsize=10)
 
 fig.savefig(dir_plot + f'seidr_wf_grid_true_tnn_cnn_{wf_type}_contig_preds.svg', dpi=150,
             bbox_inches='tight')
